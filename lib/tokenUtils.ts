@@ -58,9 +58,20 @@ export function generateInviteToken(): string {
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
+/** Secure cookies only on HTTPS deployments (LAN HTTP must not set Secure). */
+function authCookieSecure(): boolean {
+  const explicit = process.env.AUTH_COOKIE_SECURE?.trim().toLowerCase();
+  if (explicit === "true") return true;
+  if (explicit === "false") return false;
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim().toLowerCase();
+  if (appUrl.startsWith("http://")) return false;
+  if (appUrl.startsWith("https://")) return true;
+  return IS_PROD;
+}
+
 /**
  * Build a Set-Cookie header value for an auth cookie.
- * All auth cookies are httpOnly, secure (prod), sameSite=strict, path=/
+ * httpOnly, sameSite=lax (login redirect), secure only on HTTPS.
  */
 function buildCookie(
   name: string,
@@ -71,10 +82,10 @@ function buildCookie(
     `${name}=${value}`,
     `HttpOnly`,
     `Path=/`,
-    `SameSite=Strict`,
+    `SameSite=Lax`,
     `Max-Age=${maxAgeSeconds}`,
   ];
-  if (IS_PROD) parts.push("Secure");
+  if (authCookieSecure()) parts.push("Secure");
   return parts.join("; ");
 }
 

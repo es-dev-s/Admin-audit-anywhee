@@ -67,8 +67,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (email: string, password: string) => {
       const { user } = await apiLogin(email, password);
-      // Cookies are set automatically by the server response
       setState({ status: "authenticated", user: user as AuthUser });
+      // Full navigation so the next document request includes Set-Cookie (LAN IP + middleware).
+      if (typeof window !== "undefined") {
+        window.location.assign("/audit");
+      }
     },
     []
   );

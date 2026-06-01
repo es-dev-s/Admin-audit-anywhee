@@ -65,12 +65,16 @@ export async function middleware(request: NextRequest) {
   if (refreshToken) {
     try {
       const refreshUrl = new URL("/api/auth/refresh", request.url);
+      const cookieHeader =
+        request.headers.get("cookie") ??
+        `refresh_token=${refreshToken}`;
       const refreshResponse = await fetch(refreshUrl.toString(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: `refresh_token=${refreshToken}`,
+          Cookie: cookieHeader,
         },
+        cache: "no-store",
       });
 
       if (refreshResponse.ok) {
