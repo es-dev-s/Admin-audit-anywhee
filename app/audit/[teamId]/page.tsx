@@ -17,6 +17,7 @@ import { useMemo, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AnimatedPage } from "@/components/ui/AnimatedPage";
 import { useAuditSignaling } from "@/context/audit-signaling-context";
+import { isBrowserTabHttpPollEnabled } from "@/lib/browserTabPoll";
 import { apiRequestTeamLeadOrgAccess } from "@/lib/authClient";
 import { useAuth } from "@/context/auth-context";
 import { LiveScreenPanel } from "@/components/members/LiveScreenPanel";
@@ -304,6 +305,10 @@ export default function TeamMembersPage() {
   }, [orgId]);
 
   useEffect(() => {
+    if (!isBrowserTabHttpPollEnabled()) {
+      setHttpTabSnapshots(new Map());
+      return;
+    }
     if (!Number.isFinite(orgId) || orgId <= 0) return;
     if (!canOperateTeam) return;
     if (connectionStatus !== "Live" || !signalingSessionToken) return;

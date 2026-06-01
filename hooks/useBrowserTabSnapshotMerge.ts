@@ -5,6 +5,7 @@ import {
   type BrowserTabAnalyticsSnapshot,
   pickFresherTabSnapshot,
 } from "@/lib/browserTabAnalyticsTypes";
+import { isBrowserTabHttpPollEnabled } from "@/lib/browserTabPoll";
 
 const POLL_MS = 2000;
 
@@ -28,7 +29,7 @@ export function useBrowserTabSnapshotMerge(
   >(undefined);
 
   useEffect(() => {
-    if (!enabled || !live || !signalingSessionToken) {
+    if (!isBrowserTabHttpPollEnabled() || !enabled || !live || !signalingSessionToken) {
       setHttpSnapshot(undefined);
       return;
     }
