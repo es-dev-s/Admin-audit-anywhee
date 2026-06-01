@@ -1,0 +1,10 @@
+export type AuditStatus = "idle" | "pending" | "accepted" | "declined";
+export type MemberStatus = "online" | "offline" | "idle";
+export type Device = "Mac" | "Windows" | "Linux";
+export type Team = { id: string; name: string; teamLead: { name: string; avatarInitials: string }; memberCount: number; auditStatus: AuditStatus; };
+export type Member = { id: string; name: string; role: string; avatarInitials: string; status: MemberStatus; device: Device; };
+const baseTeams = [["engineering", "Engineering", "Maya Patel", "MP"],["design", "Design", "Liam Carter", "LC"],["marketing", "Marketing", "Sophia Reed", "SR"],["finance", "Finance", "Noah Brooks", "NB"],["hr", "HR", "Ava Morgan", "AM"],["operations", "Operations", "Ethan Clark", "EC"]] as const;
+export const teams: Team[] = baseTeams.map(([id, name, lead, initials], idx) => ({ id, name, teamLead: { name: lead, avatarInitials: initials }, memberCount: 6 + (idx % 3), auditStatus: "idle" }));
+const mkMembers = (teamId: string, count: number): Member[] => { const roles = ["Frontend Engineer", "Backend Engineer", "Analyst", "Coordinator", "Specialist", "Manager", "QA Engineer", "Operator"]; const devices: Device[] = ["Mac", "Windows", "Linux"]; const statuses: MemberStatus[] = ["online", "idle", "offline"]; return Array.from({ length: count }).map((_, idx) => ({ id: `${teamId}-m${idx+1}`, name: `Member ${idx+1}`, role: roles[idx % roles.length], avatarInitials: `M${idx+1}`, status: statuses[idx % statuses.length], device: devices[idx % devices.length] })); };
+export const members: Record<string, Member[]> = Object.fromEntries(teams.map((t)=>[t.id, mkMembers(t.id, t.memberCount)]));
+export const mockActivities = ["Chrome - Opened new tab","VS Code - File saved","Slack - Message sent","Notion - Updated page","Figma - Exported asset","Terminal - Ran command"];

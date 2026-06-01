@@ -1,0 +1,70 @@
+"use client";
+
+import Link from "next/link";
+import { motion } from "framer-motion";
+import { ArrowRight, Monitor, User, WifiOff } from "lucide-react";
+import type { AuditLiveClient } from "@/lib/auditTypes";
+
+function statusColor(status: string): string {
+  if (status === "sharing") return "var(--color-status-sharing)";
+  if (status === "online") return "var(--color-status-online)";
+  return "var(--color-text-muted)";
+}
+
+export function MemberCard({ client, orgId }: { client: AuditLiveClient; orgId: number }) {
+  const offline = client.status === "offline";
+  const ring = statusColor(client.status);
+  const initials = client.fullName.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: offline ? 0.5 : 1, y: 0 }}
+      transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
+      className={`group flex min-h-[160px] flex-col rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-bg-surface)] p-4 shadow-[var(--shadow-xs)] transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-sm)] ${offline ? "" : "cursor-pointer hover:-translate-y-px hover:bg-[var(--color-bg-elevated)] active:translate-y-0"}`}
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)] border-2 text-[10px] font-bold text-[var(--color-text-secondary)]"
+          style={{ borderColor: ring }}
+        >
+          {initials}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h4 className="text-[13px] font-semibold text-[var(--color-text-primary)] truncate">{client.fullName}</h4>
+          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: ring }} aria-hidden />
+            {client.status === "sharing" ? "Streaming" : client.status === "online" ? "Online" : "Offline"}
+          </p>
+        </div>
+      </div>
+
+      {client.screenSources.length > 1 ? (
+        <div className="mt-3 flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-bg-elevated)] border border-[var(--color-border)] px-2.5 py-1.5 text-[10px] text-[var(--color-text-muted)]">
+          <Monitor size={12} aria-hidden />
+          {client.screenSources.length} displays
+        </div>
+      ) : null}
+
+      <div className="mt-auto pt-3 flex items-center justify-between border-t border-[var(--color-border-subtle)]">
+        {offline ? (
+          <span className="flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+            <WifiOff size={12} /> Offline
+          </span>
+        ) : (
+          <Link
+            href={`/audit/${orgId}/${client.id}`}
+            className="ui-link inline-flex items-center gap-1.5 text-[12px]"
+          >
+            View Live{" "}
+            <ArrowRight
+              size={12}
+              aria-hidden
+              className="transition-transform duration-200 group-hover:translate-x-0.5"
+            />
+          </Link>
+        )}
+      </div>
+    </motion.div>
+  );
+}
