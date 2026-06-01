@@ -153,7 +153,9 @@ type TlAccessInternal = {
 export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const { showToast } = useToast();
   const showToastRef = useRef(showToast);
-  showToastRef.current = showToast;
+  useEffect(() => {
+    showToastRef.current = showToast;
+  }, [showToast]);
   const { state: authState } = useAuth();
   const [memberScope, setMemberScope] = useState<MergedAccessGrant | null>(null);
   const [tlAccess, setTlAccess] = useState<TlAccessInternal>({
@@ -189,6 +191,10 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   ]);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const unmountedRef = useRef(false);
+  const connectCooldownByClientRef = useRef<Map<number, number>>(new Map());
   const sessionTokenRef = useRef<string | null>(null);
   const [signalingSessionToken, setSignalingSessionToken] = useState<string | null>(null);
   const iceServersRef = useRef<RTCIceServer[]>([]);
@@ -253,6 +259,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
 
   const connectSignalingRequest = useCallback(
     (clientId: number) => {
+      const now = Date.now();
+      const last = connectCooldownByClientRef.current.get(clientId) ?? 0;
+      // Throttle duplicate connect requests for the same client socket.
+      if (now - last < 1200) return;
+      connectCooldownByClientRef.current.set(clientId, now);
       const token = sessionTokenRef.current;
       if (!token) return;
       send({ type: "connect-to-client", token, clientId });
@@ -280,6 +291,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   }, [connectSignalingRequest]);
 
   const flushPendingConnects = useCallback(() => {
+    connectCooldownByClientRef.current.clear();
     for (const [clientId, n] of interestRef.current) {
       if (n > 0) connectSignalingRequestRef.current(clientId);
     }
@@ -460,35 +472,75 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    let stopped = false;
+    unmountedRef.current = false;
     const connectUrl = new URL(wsUrl);
     if (wsConnectToken) connectUrl.searchParams.set("token", wsConnectToken);
 
-    const sock = new WebSocket(connectUrl.toString());
-    wsRef.current = sock;
-
-    sock.onopen = () => {
-      if (stopped) return;
-      setConnectionStatus("Authenticating…");
-      send({
-        type: "admin-login",
-        orgName: auditOrgName,
-        username: auditUsername,
-        password: auditPassword,
-      });
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
 
-    sock.onclose = () => {
-      if (stopped) return;
-      setConnectionStatus("Socket disconnected");
-    };
-    sock.onerror = () => {
-      if (stopped) return;
-      setConnectionStatus("Socket error");
+    const scheduleReconnect = () => {
+      if (unmountedRef.current) return;
+      clearReconnectTimer();
+      reconnectAttemptRef.current += 1;
+      const attempt = reconnectAttemptRef.current;
+      const delayMs = Math.min(15_000, 800 * Math.pow(2, attempt - 1));
+      setConnectionStatus(`Reconnecting… (${attempt})`);
+      reconnectTimerRef.current = setTimeout(() => {
+        if (unmountedRef.current) return;
+        connect();
+      }, delayMs);
     };
 
-    sock.onmessage = async (ev) => {
-      if (stopped) return;
+    const connect = () => {
+      if (unmountedRef.current) return;
+      try {
+        const prev = wsRef.current;
+        if (prev) {
+          prev.onopen = null;
+          prev.onclose = null;
+          prev.onerror = null;
+          prev.onmessage = null;
+          prev.close();
+        }
+      } catch {
+        /* ignore */
+      }
+      setConnectionStatus("Connecting…");
+      const sock = new WebSocket(connectUrl.toString());
+      wsRef.current = sock;
+
+      sock.onopen = () => {
+        if (unmountedRef.current) return;
+        reconnectAttemptRef.current = 0;
+        clearReconnectTimer();
+        setConnectionStatus("Authenticating…");
+        send({
+          type: "admin-login",
+          orgName: auditOrgName,
+          username: auditUsername,
+          password: auditPassword,
+        });
+      };
+
+      sock.onclose = () => {
+        if (unmountedRef.current) return;
+        setConnectionStatus("Socket disconnected");
+        sessionTokenRef.current = null;
+        setSignalingSessionToken(null);
+        scheduleReconnect();
+      };
+      sock.onerror = () => {
+        if (unmountedRef.current) return;
+        setConnectionStatus("Socket error");
+      };
+
+      sock.onmessage = async (ev) => {
+        if (unmountedRef.current) return;
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
@@ -507,6 +559,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         case "admin-login-response": {
           if (msg.success !== true || typeof msg.token !== "string") {
             setConnectionStatus(typeof msg.message === "string" ? msg.message : "Login failed");
+            scheduleReconnect();
             break;
           }
           sessionTokenRef.current = msg.token;
@@ -574,6 +627,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           if (!clientSocketId) break;
 
           if (Number.isFinite(clientId) && clientId > 0) {
+            connectCooldownByClientRef.current.delete(clientId);
             const prevSid = clientSocketByClientIdRef.current.get(clientId);
             if (prevSid && prevSid !== clientSocketId) {
               stopViewingServer(prevSid);
@@ -704,10 +758,14 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         default:
           break;
       }
+      };
     };
 
+    connect();
+
     return () => {
-      stopped = true;
+      unmountedRef.current = true;
+      clearReconnectTimer();
       for (const sid of pcByClientSocketRef.current.keys()) {
         teardownPeerForClientSocket(sid);
       }
@@ -717,7 +775,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       sessionTokenRef.current = null;
       setSignalingSessionToken(null);
       try {
-        sock.close();
+        wsRef.current?.close();
       } catch {
         /* ignore */
       }
