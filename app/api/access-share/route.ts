@@ -38,6 +38,7 @@ function uniqAppend(base: string[], add: string[]): string[] {
 
 async function applyGrantShareToUser(
   targetUserId: string,
+  ownerTeamLeadId: string,
   shareScope: "team" | "member",
   signalOrgStr: string,
   orgIdStr: string | null,
@@ -113,6 +114,7 @@ async function applyGrantShareToUser(
       .from("users")
       .update({ org_id: sig })
       .eq("id", targetUserId)
+      .eq("created_by", ownerTeamLeadId)
       .eq("role", "audit_member");
 
     if (orgErr) {
@@ -474,6 +476,7 @@ export async function POST(req: NextRequest) {
           : null;
       const r = await applyGrantShareToUser(
         targetUserId,
+        authUser.id,
         shareScope,
         signalOrgStr,
         orgIdStr,
@@ -494,6 +497,7 @@ export async function POST(req: NextRequest) {
         .from("users")
         .select("id, role, email, name")
         .eq("email", emailRaw)
+        .eq("created_by", authUser.id)
         .maybeSingle();
 
       if (userErr) {
@@ -559,6 +563,7 @@ export async function POST(req: NextRequest) {
         .from("users")
         .select("id, role, name, email")
         .eq("id", tid)
+        .eq("created_by", authUser.id)
         .maybeSingle();
 
       if (userErr || !target) return err("Member not found", 404);
@@ -627,7 +632,8 @@ export async function POST(req: NextRequest) {
         .from("users")
         .select("id")
         .eq("role", "audit_member")
-        .eq("audit_org_id", oid);
+        .eq("audit_org_id", oid)
+        .eq("created_by", authUser.id);
 
       if (mErr) {
         console.error("[access-share] org members:", mErr.message);
@@ -776,6 +782,7 @@ export async function DELETE(req: NextRequest) {
         .from("users")
         .select("id, role, email, name")
         .eq("email", emailRaw)
+        .eq("created_by", authUser.id)
         .maybeSingle();
       if (userErr || !target) return err("Member not found", 404);
       if (target.role !== "audit_member") {
@@ -829,6 +836,7 @@ export async function DELETE(req: NextRequest) {
         .from("users")
         .select("id, role, name, email")
         .eq("id", tid)
+        .eq("created_by", authUser.id)
         .maybeSingle();
       if (userErr || !target) return err("Member not found", 404);
       if (target.role !== "audit_member") return err("Target is not an audit member", 400);
@@ -891,7 +899,8 @@ export async function DELETE(req: NextRequest) {
         .from("users")
         .select("id")
         .eq("role", "audit_member")
-        .eq("audit_org_id", oid);
+        .eq("audit_org_id", oid)
+        .eq("created_by", authUser.id);
       if (mErr) return err("Internal server error", 500);
 
       const list = members ?? [];

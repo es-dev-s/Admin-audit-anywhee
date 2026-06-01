@@ -25,6 +25,7 @@ export async function PATCH(
       .from("users")
       .select("id, role, audit_org_id, name, email")
       .eq("id", memberId)
+      .eq("created_by", authUser.id)
       .maybeSingle();
 
     if (mErr || !member) return err("Member not found", 404);
@@ -74,6 +75,7 @@ export async function PATCH(
       .from("users")
       .update(updateRow)
       .eq("id", memberId)
+      .eq("created_by", authUser.id)
       .select("id, name, email, audit_org_id")
       .single();
 

@@ -15,6 +15,7 @@ export async function GET(req: NextRequest) {
       .from("users")
       .select("id, name, email, role, audit_org_id, created_by, created_at")
       .eq("role", "audit_member")
+      .eq("created_by", authUser.id)
       .order("name");
 
     if (error) {

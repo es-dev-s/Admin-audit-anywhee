@@ -74,7 +74,7 @@ export async function POST(
     // 1. Fetch and validate invite
     const { data: invite, error: inviteErr } = await supabase
       .from("invites")
-      .select("id, scope, expires_at, max_uses, use_count, revoked")
+      .select("id, scope, created_by, expires_at, max_uses, use_count, revoked")
       .eq("token", token)
       .maybeSingle();
 
@@ -114,6 +114,7 @@ export async function POST(
         email: normalizedEmail,
         password_hash,
         role: "audit_member",
+        created_by: invite.created_by,
       })
       .select("id, name, email, role")
       .single();

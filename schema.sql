@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_org_id ON users(org_id) WHERE org_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_role_created_by ON users(role, created_by);
 CREATE INDEX IF NOT EXISTS idx_invites_token ON invites(token);
 CREATE INDEX IF NOT EXISTS idx_invites_created_by ON invites(created_by);
 CREATE INDEX IF NOT EXISTS idx_access_grants_user_id ON access_grants(user_id);
@@ -113,6 +114,26 @@ DO $$ BEGIN
   CREATE POLICY "No direct client access" ON refresh_tokens FOR ALL USING (FALSE);
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+-- Enforce team-lead ownership metadata for audit members.
+-- Keeps multi-admin directory data isolated by creator.
+CREATE OR REPLACE FUNCTION enforce_audit_member_owner()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.role = 'audit_member' AND NEW.created_by IS NULL THEN
+    RAISE EXCEPTION 'audit_member rows must include created_by (team_lead owner)';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_enforce_audit_member_owner ON users;
+CREATE TRIGGER trg_enforce_audit_member_owner
+  BEFORE INSERT OR UPDATE OF role, created_by ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION enforce_audit_member_owner();
 
 -- Super-admin–gated org visibility for audit team leads (see schema_migration_team_lead_org_access.sql)
 CREATE TABLE IF NOT EXISTS team_lead_org_access (
