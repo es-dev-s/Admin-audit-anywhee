@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState, useEffect, useMemo } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, AlertCircle } from "lucide-react";
 import { useAuth } from "@/context/auth-context";
@@ -11,7 +11,6 @@ const EMAIL_DOMAIN = "@entegrasources.com.np";
 function LoginPageInner() {
   const { state, login } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,10 +20,9 @@ function LoginPageInner() {
 
   useEffect(() => {
     if (state.status === "authenticated") {
-      const from = searchParams.get("from");
-      router.replace(from && from.startsWith("/") ? from : "/audit");
+      router.replace("/audit");
     }
-  }, [state.status, router, searchParams]);
+  }, [state.status, router]);
 
   const emailDomainError = useMemo(() => {
     if (!email.trim()) return null;

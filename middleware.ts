@@ -161,7 +161,6 @@ export async function middleware(request: NextRequest) {
   }
 
   const loginUrl = new URL("/login", request.url);
-  loginUrl.searchParams.set("from", pathname);
   const response = NextResponse.redirect(loginUrl);
   response.cookies.set("access_token", "", { maxAge: 0, path: "/" });
   response.cookies.set("refresh_token", "", { maxAge: 0, path: "/" });
