@@ -206,6 +206,8 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const prefsRef = useRef<Map<number, { preferredSourceId?: string | null; preferredSourceIndex?: number | null }>>(new Map());
   const streamTimeoutByClientRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const streamTrackReceivedRef = useRef<Set<number>>(new Set());
+  const connectRetryCountRef = useRef<Map<number, number>>(new Map());
+  const connectRetryTimerRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const [connectionStatus, setConnectionStatus] = useState("Initializing…");
   const connectionStatusRef = useRef(connectionStatus);
@@ -266,15 +268,55 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     [clearStreamConnectTimeout, teardownPeerForClientSocket],
   );
 
+  const clearConnectRetry = useCallback((clientId: number) => {
+    connectRetryCountRef.current.delete(clientId);
+    const t = connectRetryTimerRef.current.get(clientId);
+    if (t) {
+      clearTimeout(t);
+      connectRetryTimerRef.current.delete(clientId);
+    }
+  }, []);
+
   const failClientStream = useCallback(
     (clientId: number, message: string) => {
       if (!Number.isFinite(clientId) || clientId <= 0) return;
+      clearConnectRetry(clientId);
       interestRef.current.delete(clientId);
       connectCooldownByClientRef.current.delete(clientId);
       teardownPeerForClientId(clientId);
       showToastRef.current(message, "error");
     },
-    [teardownPeerForClientId],
+    [clearConnectRetry, teardownPeerForClientId],
+  );
+
+  const scheduleConnectRetry = useCallback(
+    (clientId: number, message: string) => {
+      if (!Number.isFinite(clientId) || clientId <= 0) return;
+      if ((interestRef.current.get(clientId) ?? 0) <= 0) return;
+
+      const attempt = (connectRetryCountRef.current.get(clientId) ?? 0) + 1;
+      connectRetryCountRef.current.set(clientId, attempt);
+      if (attempt > 6) {
+        failClientStream(clientId, message);
+        return;
+      }
+
+      if (attempt === 1) {
+        showToastRef.current("Waiting for client on signaling — retrying…", "error");
+      }
+
+      const prev = connectRetryTimerRef.current.get(clientId);
+      if (prev) clearTimeout(prev);
+      connectRetryTimerRef.current.set(
+        clientId,
+        setTimeout(() => {
+          connectRetryTimerRef.current.delete(clientId);
+          connectCooldownByClientRef.current.delete(clientId);
+          connectSignalingRequestRef.current(clientId);
+        }, 2000),
+      );
+    },
+    [failClientStream],
   );
 
   const armStreamConnectTimeout = useCallback(
@@ -688,13 +730,17 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
                   ? msg.error
                   : "Could not connect to client";
             if (Number.isFinite(clientId) && clientId > 0) {
-              failClientStream(clientId, text);
+              const retryable =
+                /connection not found|client unavailable|not available/i.test(text);
+              if (retryable) scheduleConnectRetry(clientId, text);
+              else failClientStream(clientId, text);
             } else {
               showToastRef.current(text, "error");
             }
             break;
           }
           if (Number.isFinite(clientId) && clientId > 0) {
+            clearConnectRetry(clientId);
             armStreamConnectTimeout(clientId);
           }
           break;
@@ -705,6 +751,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           if (!clientSocketId) break;
 
           if (Number.isFinite(clientId) && clientId > 0) {
+            clearConnectRetry(clientId);
             connectCooldownByClientRef.current.delete(clientId);
             armStreamConnectTimeout(clientId);
             const prevSid = clientSocketByClientIdRef.current.get(clientId);
