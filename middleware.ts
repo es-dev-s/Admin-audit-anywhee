@@ -1,17 +1,9 @@
 // middleware.ts
-// 1) Enterprise IP allowlist (opt-in: ENTERPRISE_IP_ALLOWLIST_ENABLED=1) — lib/enterpriseIpAllowlist.ts
-// 2) JWT auth for protected routes (unchanged)
-// Behind a reverse proxy: ensure x-forwarded-for or x-real-ip is set with the real client IP.
+// JWT auth for protected routes.
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifyAccessTokenEdge } from "@/lib/edgeTokenUtils";
-import {
-  isEnterpriseIpAllowed,
-  isEnterpriseIpAllowlistDisabled,
-} from "@/lib/enterpriseIpAllowlist";
-
-const BLOCKED_PAGE_PATH = "/blocked";
 
 function isStaticOrPublicBypass(pathname: string): boolean {
   if (pathname.startsWith("/_next/static")) return true;
@@ -20,41 +12,6 @@ function isStaticOrPublicBypass(pathname: string): boolean {
   if (pathname === "/logo.ico") return true;
   if (pathname === "/404-page.png") return true;
   return false;
-}
-
-function getClientIp(request: NextRequest): string | null {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  const realIp = request.headers.get("x-real-ip")?.trim();
-  if (realIp) return realIp;
-  const cf = request.headers.get("cf-connecting-ip")?.trim();
-  if (cf) return cf;
-  return null;
-}
-
-function isIpAccessAllowed(request: NextRequest): boolean {
-  if (isEnterpriseIpAllowlistDisabled()) return true;
-  const ip = getClientIp(request);
-  if (!ip) {
-    return process.env.ENTERPRISE_ALLOW_UNKNOWN_CLIENT_IP === "1";
-  }
-  return isEnterpriseIpAllowed(ip);
-}
-
-function respondBlocked(request: NextRequest, pathname: string): NextResponse {
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json(
-      { error: "Access denied: connect from an approved company network." },
-      { status: 403 },
-    );
-  }
-  const url = request.nextUrl.clone();
-  url.pathname = BLOCKED_PAGE_PATH;
-  url.search = "";
-  return NextResponse.redirect(url);
 }
 
 function needsAuthMiddleware(pathname: string): boolean {
@@ -85,17 +42,6 @@ export async function middleware(request: NextRequest) {
 
   if (isStaticOrPublicBypass(pathname)) {
     return NextResponse.next();
-  }
-
-  if (!isIpAccessAllowed(request)) {
-    if (pathname === BLOCKED_PAGE_PATH) {
-      return NextResponse.next();
-    }
-    return respondBlocked(request, pathname);
-  }
-
-  if (pathname === BLOCKED_PAGE_PATH) {
-    return NextResponse.redirect(new URL("/", request.url));
   }
 
   if (!needsAuthMiddleware(pathname)) {
