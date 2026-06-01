@@ -21,8 +21,10 @@ import {
 import type { MergedAccessGrant } from "@/lib/accessGrantTypes";
 import type { BrowserTabAnalyticsSnapshot } from "@/lib/browserTabAnalyticsTypes";
 import { parseBrowserTabRow, parseInteractionEvent } from "@/lib/browserTabAnalyticsTypes";
+import { resolveSignalingWssUrl } from "@/lib/signalingWsUrl";
 
 const DEFAULT_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+const STREAM_CONNECT_TIMEOUT_MS = 45_000;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -202,8 +204,14 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const clientSocketByClientIdRef = useRef<Map<number, string>>(new Map());
   const interestRef = useRef<Map<number, number>>(new Map());
   const prefsRef = useRef<Map<number, { preferredSourceId?: string | null; preferredSourceIndex?: number | null }>>(new Map());
+  const streamTimeoutByClientRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const streamTrackReceivedRef = useRef<Set<number>>(new Set());
 
   const [connectionStatus, setConnectionStatus] = useState("Initializing…");
+  const connectionStatusRef = useRef(connectionStatus);
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [homeOrgName, setHomeOrgName] = useState<string | null>(null);
   const [orgs, setOrgs] = useState<AuditOrg[]>([]);
@@ -231,8 +239,18 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const clearStreamConnectTimeout = useCallback((clientId: number) => {
+    const t = streamTimeoutByClientRef.current.get(clientId);
+    if (t) {
+      clearTimeout(t);
+      streamTimeoutByClientRef.current.delete(clientId);
+    }
+  }, []);
+
   const teardownPeerForClientId = useCallback(
     (clientId: number) => {
+      clearStreamConnectTimeout(clientId);
+      streamTrackReceivedRef.current.delete(clientId);
       const sid = clientSocketByClientIdRef.current.get(clientId);
       if (sid) {
         teardownPeerForClientSocket(sid);
@@ -245,7 +263,37 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         return next;
       });
     },
-    [teardownPeerForClientSocket],
+    [clearStreamConnectTimeout, teardownPeerForClientSocket],
+  );
+
+  const failClientStream = useCallback(
+    (clientId: number, message: string) => {
+      if (!Number.isFinite(clientId) || clientId <= 0) return;
+      interestRef.current.delete(clientId);
+      connectCooldownByClientRef.current.delete(clientId);
+      teardownPeerForClientId(clientId);
+      showToastRef.current(message, "error");
+    },
+    [teardownPeerForClientId],
+  );
+
+  const armStreamConnectTimeout = useCallback(
+    (clientId: number) => {
+      if (!Number.isFinite(clientId) || clientId <= 0) return;
+      clearStreamConnectTimeout(clientId);
+      streamTimeoutByClientRef.current.set(
+        clientId,
+        setTimeout(() => {
+          streamTimeoutByClientRef.current.delete(clientId);
+          if (streamTrackReceivedRef.current.has(clientId)) return;
+          failClientStream(
+            clientId,
+            "Stream timed out. Confirm the client app is online, signaling uses Cloudflare TURN, and ports 18085/13000 are open.",
+          );
+        }, STREAM_CONNECT_TIMEOUT_MS),
+      );
+    },
+    [clearStreamConnectTimeout, failClientStream],
   );
 
   const stopViewingServer = useCallback(
@@ -265,7 +313,16 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       if (now - last < 1200) return;
       connectCooldownByClientRef.current.set(clientId, now);
       const token = sessionTokenRef.current;
-      if (!token) return;
+      if (!token) {
+        const status = connectionStatusRef.current;
+        showToastRef.current(
+          status === "Live"
+            ? "Signaling session expired — refresh the page"
+            : `Not connected to signaling (${status})`,
+          "error",
+        );
+        return;
+      }
       send({ type: "connect-to-client", token, clientId });
     },
     [send],
@@ -456,7 +513,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    const wsUrl = process.env.NEXT_PUBLIC_ANYWHERE_SIGNALING_WSS ?? "";
+    const wsUrl = resolveSignalingWssUrl();
     const wsConnectToken = process.env.NEXT_PUBLIC_WS_CONNECT_TOKEN ?? "";
     const auditOrgName = process.env.NEXT_PUBLIC_AUDIT_ORG_NAME ?? "default";
     const auditUsername = process.env.NEXT_PUBLIC_AUDIT_USERNAME ?? "";
@@ -621,6 +678,27 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "connect-response": {
+          const clientId = Number(msg.clientId);
+          if (msg.success !== true) {
+            const text =
+              typeof msg.message === "string" && msg.message.trim()
+                ? msg.message.trim()
+                : typeof msg.error === "string"
+                  ? msg.error
+                  : "Could not connect to client";
+            if (Number.isFinite(clientId) && clientId > 0) {
+              failClientStream(clientId, text);
+            } else {
+              showToastRef.current(text, "error");
+            }
+            break;
+          }
+          if (Number.isFinite(clientId) && clientId > 0) {
+            armStreamConnectTimeout(clientId);
+          }
+          break;
+        }
         case "start-offer": {
           const clientSocketId = String(msg.clientSocketId || "");
           const clientId = Number(msg.clientId);
@@ -628,6 +706,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
 
           if (Number.isFinite(clientId) && clientId > 0) {
             connectCooldownByClientRef.current.delete(clientId);
+            armStreamConnectTimeout(clientId);
             const prevSid = clientSocketByClientIdRef.current.get(clientId);
             if (prevSid && prevSid !== clientSocketId) {
               stopViewingServer(prevSid);
@@ -647,11 +726,20 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
             const stream = trackEvent.streams[0] ?? new MediaStream([trackEvent.track]);
             const resolvedId = Number.isFinite(clientId) && clientId > 0 ? clientId : null;
             if (resolvedId == null) return;
+            streamTrackReceivedRef.current.add(resolvedId);
+            clearStreamConnectTimeout(resolvedId);
             setStreams((prev) => {
               const next = new Map(prev);
               next.set(resolvedId, stream);
               return next;
             });
+          };
+
+          pc.onconnectionstatechange = () => {
+            if (pc.connectionState !== "failed" && pc.connectionState !== "disconnected") return;
+            if (!Number.isFinite(clientId) || clientId <= 0) return;
+            if (streamTrackReceivedRef.current.has(clientId)) return;
+            failClientStream(clientId, `WebRTC ${pc.connectionState} — check TURN (Cloudflare) on signaling server.`);
           };
 
           pc.onicecandidate = (iceEvent) => {
