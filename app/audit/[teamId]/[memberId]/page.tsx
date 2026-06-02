@@ -10,6 +10,7 @@ import { ActivityLog } from "@/components/members/ActivityLog";
 import { useAuditSignaling } from "@/context/audit-signaling-context";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
 import { resolveClientEnrollmentOrg } from "@/lib/memberOrgDisplay";
+import { auditStreamViewOpts } from "@/lib/auditStreamViewKey";
 
 function MemberLiveBody({
   orgId,
@@ -25,10 +26,12 @@ function MemberLiveBody({
 
   const client = getClient(clientId);
   const sources = client?.screenSources ?? [];
-  const stream = getStream(clientId, {
-    preferredSourceId: sources[displayIdx]?.id ?? null,
-    preferredSourceIndex: displayIdx,
-  });
+  const streamOpts = useMemo(
+    () =>
+      auditStreamViewOpts(displayIdx, sources[displayIdx]?.id ?? null, false),
+    [displayIdx, sources],
+  );
+  const stream = getStream(clientId, streamOpts);
 
   const orgName = useMemo(() => {
     if (!Number.isFinite(orgId)) return null;
@@ -37,9 +40,9 @@ function MemberLiveBody({
 
   useEffect(() => {
     if (streamAuth.status !== "authorized") return;
-    acquireStream(clientId);
-    return () => releaseStream(clientId);
-  }, [clientId, streamAuth.status, acquireStream, releaseStream]);
+    acquireStream(clientId, streamOpts);
+    return () => releaseStream(clientId, streamOpts);
+  }, [clientId, streamAuth.status, streamOpts, acquireStream, releaseStream]);
 
   const canStream = client?.status === "sharing" || client?.status === "online";
   const memberName = client?.fullName ?? `Client ${clientId}`;
@@ -54,16 +57,13 @@ function MemberLiveBody({
 
   const onDisplayChange = (sourceId: string, idx: number) => {
     if (streamAuth.status !== "authorized") return;
-    releaseStream(clientId, {
-      preferredSourceId: sources[displayIdx]?.id ?? null,
-      preferredSourceIndex: displayIdx,
-    });
+    releaseStream(
+      clientId,
+      auditStreamViewOpts(displayIdx, sources[displayIdx]?.id ?? null, false),
+    );
     setDisplayIdx(idx);
     queueMicrotask(() =>
-      acquireStream(clientId, {
-        preferredSourceId: sourceId,
-        preferredSourceIndex: idx,
-      }),
+      acquireStream(clientId, auditStreamViewOpts(idx, sourceId, false)),
     );
   };
 

@@ -27,6 +27,7 @@ import { useUIStore } from "@/store/uiStore";
 import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
 import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
 import type { AuditLiveClient } from "@/lib/auditTypes";
+import { auditStreamViewOpts } from "@/lib/auditStreamViewKey";
 import {
   type BrowserTabAnalyticsSnapshot,
   formatActiveDuration,
@@ -69,10 +70,12 @@ function StreamSidePanel({
 
   const client = getClient(clientId);
   const sources = client?.screenSources ?? [];
-  const stream = getStream(clientId, {
-    preferredSourceId: sources[displayIdx]?.id ?? null,
-    preferredSourceIndex: displayIdx,
-  });
+  const streamOpts = useMemo(
+    () =>
+      auditStreamViewOpts(displayIdx, sources[displayIdx]?.id ?? null, false),
+    [displayIdx, sources],
+  );
+  const stream = getStream(clientId, streamOpts);
 
   const orgName = useMemo(() => {
     if (!Number.isFinite(orgId)) return null;
@@ -81,9 +84,9 @@ function StreamSidePanel({
 
   useEffect(() => {
     if (streamAuth.status !== "authorized") return;
-    acquireStream(clientId);
-    return () => releaseStream(clientId);
-  }, [clientId, streamAuth.status, acquireStream, releaseStream]);
+    acquireStream(clientId, streamOpts);
+    return () => releaseStream(clientId, streamOpts);
+  }, [clientId, streamAuth.status, streamOpts, acquireStream, releaseStream]);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -163,16 +166,13 @@ function StreamSidePanel({
   const title = client.fullName;
 
   const onDisplayChange = (sourceId: string, idx: number) => {
-    releaseStream(clientId, {
-      preferredSourceId: sources[displayIdx]?.id ?? null,
-      preferredSourceIndex: displayIdx,
-    });
+    releaseStream(
+      clientId,
+      auditStreamViewOpts(displayIdx, sources[displayIdx]?.id ?? null, false),
+    );
     setDisplayIdx(idx);
     queueMicrotask(() =>
-      acquireStream(clientId, {
-        preferredSourceId: sourceId,
-        preferredSourceIndex: idx,
-      }),
+      acquireStream(clientId, auditStreamViewOpts(idx, sourceId, false)),
     );
   };
 

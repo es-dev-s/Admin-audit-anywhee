@@ -18,6 +18,7 @@ import { LiveScreenPanel } from "@/components/members/LiveScreenPanel";
 import { MultiDisplaySelector } from "@/components/audit/MultiDisplaySelector";
 import { memberOrgPlainTextFromClient } from "@/lib/memberOrgDisplay";
 import { MAX_CONCURRENT_ACTIVE_STREAMS } from "@/lib/auditStreamLimits";
+import { auditStreamViewOpts } from "@/lib/auditStreamViewKey";
 import {
   getLiveFeedLayout,
   isSideBySideLiveFeedLayout,
@@ -134,11 +135,13 @@ function WallFilledSlot({
   const activeDisplayIdx = sideBySide ? pinnedDisplayIdx : displayIdx;
   const activeSource = sources[activeDisplayIdx] ?? sources[0];
   const streamOpts = useMemo(
-    () => ({
-      preferredSourceId: activeSource?.id ?? null,
-      preferredSourceIndex: activeDisplayIdx,
-    }),
-    [activeSource?.id, activeDisplayIdx],
+    () =>
+      auditStreamViewOpts(
+        activeDisplayIdx,
+        activeSource?.id ?? null,
+        sideBySide,
+      ),
+    [activeSource?.id, activeDisplayIdx, sideBySide],
   );
   const stream = getStream(client.id, streamOpts);
   const sharing = client.status === "sharing";
@@ -165,17 +168,15 @@ function WallFilledSlot({
   const onDisplayChange = useCallback(
     (sourceId: string, idx: number) => {
       if (sideBySide) return;
-      const prevOpts = {
-        preferredSourceId: sources[displayIdx]?.id ?? null,
-        preferredSourceIndex: displayIdx,
-      };
+      const prevOpts = auditStreamViewOpts(
+        displayIdx,
+        sources[displayIdx]?.id ?? null,
+        false,
+      );
       setDisplayIdx(idx);
       releaseStream(client.id, prevOpts);
       queueMicrotask(() =>
-        acquireStream(client.id, {
-          preferredSourceId: sourceId,
-          preferredSourceIndex: idx,
-        }),
+        acquireStream(client.id, auditStreamViewOpts(idx, sourceId, false)),
       );
     },
     [client.id, displayIdx, sources, sideBySide, acquireStream, releaseStream],

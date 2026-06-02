@@ -475,7 +475,6 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         const started = connectSignalingRequestImmediate(viewKey);
         if (!started) {
           connectInFlightRef.current = Math.max(0, connectInFlightRef.current - 1);
-          popPendingViewKey(clientIdFromViewKey(viewKey));
           if ((interestRef.current.get(viewKey) ?? 0) > 0) {
             connectQueueRef.current.unshift(viewKey);
           }
@@ -718,10 +717,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       if (!tlAccess.loaded) return { clients: [], orgs };
 
       if (tlAccess.hasGroupScope && tlAccess.allowedClientIds != null) {
-        // Admin-group scope: only the specific clients in the assigned groups.
         const allowed = tlAccess.allowedClientIds;
-        const filtered = clients.filter((c) => allowed.has(c.id));
+        const filtered = clients.filter((c) => allowed.has(Number(c.id)));
         const orgIds = new Set(filtered.map((c) => c.orgId));
+        for (const oid of tlAccess.approved) {
+          if (Number.isFinite(oid) && oid > 0) orgIds.add(oid);
+        }
         return { clients: filtered, orgs: orgs.filter((o) => orgIds.has(o.id)) };
       }
 
@@ -939,6 +940,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
             }
             break;
           }
+          if (Number.isFinite(clientId) && clientId > 0) {
+            const pending = pendingViewKeyByClientRef.current.get(clientId);
+            const viewKey = pending?.[0] ?? String(clientId);
+            clearConnectRetry(viewKey);
+            armStreamConnectTimeout(viewKey);
+          }
           break;
         }
         case "start-offer": {
@@ -989,6 +996,19 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
               next.set(resolvedViewKey, stream);
               return next;
             });
+
+            const cid = clientIdFromViewKey(resolvedViewKey);
+            if (Number.isFinite(cid) && cid > 0) {
+              const remaining = pendingViewKeyByClientRef.current.get(cid) ?? [];
+              const nextKey = remaining.find(
+                (k) =>
+                  (interestRef.current.get(k) ?? 0) > 0 &&
+                  !clientSocketByViewKeyRef.current.has(k),
+              );
+              if (nextKey) {
+                queueMicrotask(() => connectSignalingRequestRef.current(nextKey));
+              }
+            }
           };
 
           pc.onconnectionstatechange = () => {
