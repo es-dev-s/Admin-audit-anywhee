@@ -107,7 +107,7 @@ function sourcesKey(sources: AuditLiveClient["screenSources"]): string {
   return (sources ?? []).map((s) => s.id).join(",");
 }
 
-const WallFilledSlot = memo(function WallFilledSlot({
+const WallFilledSlot = function WallFilledSlot({
   client,
   slotIndex,
   streamableClients,
@@ -269,16 +269,7 @@ const WallFilledSlot = memo(function WallFilledSlot({
       </div>
     </>
   );
-}, (prev, next) => {
-  return (
-    prev.client.id === next.client.id &&
-    prev.client.status === next.client.status &&
-    prev.client.orgId === next.client.orgId &&
-    prev.slotIndex === next.slotIndex &&
-    prev.sideBySide === next.sideBySide &&
-    sourcesKey(prev.client.screenSources) === sourcesKey(next.client.screenSources)
-  );
-});
+};
 
 // ─── Main wall component ───────────────────────────────────────────────────────
 export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {

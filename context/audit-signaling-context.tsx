@@ -278,6 +278,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const pcByViewKeyRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const clientSocketByViewKeyRef = useRef<Map<string, string>>(new Map());
   const pendingViewKeyByClientRef = useRef<Map<number, string[]>>(new Map());
+  const activeSessionIdByViewKeyRef = useRef<Map<string, number>>(new Map());
   const interestRef = useRef<Map<string, number>>(new Map());
   const prefsRef = useRef<Map<string, AuditStreamViewOptions>>(new Map());
   const streamTimeoutByViewKeyRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -424,10 +425,22 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const removePendingViewKey = useCallback((clientId: number, viewKey: string) => {
+    if (!Number.isFinite(clientId) || clientId <= 0) return;
+    const q = pendingViewKeyByClientRef.current.get(clientId) ?? [];
+    const idx = q.indexOf(viewKey);
+    if (idx !== -1) {
+      const next = [...q];
+      next.splice(idx, 1);
+      if (next.length) pendingViewKeyByClientRef.current.set(clientId, next);
+      else pendingViewKeyByClientRef.current.delete(clientId);
+    }
+  }, []);
+
   const popPendingViewKey = useCallback((clientId: number): string | null => {
     const q = pendingViewKeyByClientRef.current.get(clientId);
     if (!q?.length) return null;
-    const viewKey = q.pop()!;
+    const viewKey = q.shift()!;
     if (!q.length) pendingViewKeyByClientRef.current.delete(clientId);
     else pendingViewKeyByClientRef.current.set(clientId, q);
     return viewKey;
