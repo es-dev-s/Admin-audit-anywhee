@@ -131,7 +131,7 @@ export default function RegisterPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Your full name"
-                className="h-11 w-full rounded-[var(--input-radius)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-4 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_rgba(59,125,214,0.1)]"
+                className="h-11 w-full rounded-[var(--input-radius)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-4 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_var(--color-focus-ring)]"
               />
             </div>
 
@@ -146,7 +146,7 @@ export default function RegisterPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder={`you${EMAIL_DOMAIN}`}
-                className={`h-11 w-full rounded-[var(--input-radius)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-4 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_rgba(59,125,214,0.1)] ${
+                className={`h-11 w-full rounded-[var(--input-radius)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-4 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_var(--color-focus-ring)] ${
                   emailDomainError ? "!border-[var(--red)]" : ""
                 }`}
               />
@@ -167,7 +167,7 @@ export default function RegisterPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Create a strong password"
-                  className="h-11 w-full rounded-[var(--input-radius)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-4 pr-11 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_rgba(59,125,214,0.1)]"
+                  className="h-11 w-full rounded-[var(--input-radius)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-4 pr-11 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_var(--color-focus-ring)]"
                 />
                 <button
                   type="button"
@@ -217,7 +217,7 @@ export default function RegisterPage() {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="••••••••"
-                  className={`h-11 w-full rounded-[var(--input-radius)] border px-4 pr-11 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_rgba(59,125,214,0.1)] ${
+                  className={`h-11 w-full rounded-[var(--input-radius)] border px-4 pr-11 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-shadow duration-200 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/25 focus:shadow-[0_0_0_3px_var(--color-focus-ring)] ${
                     !passwordsMatch ? "border-[var(--red)] bg-[var(--color-bg-input)]" : "border-[var(--color-border-subtle)] bg-[var(--color-bg-input)]"
                   }`}
                 />
@@ -238,7 +238,7 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex h-11 w-full items-center justify-center rounded-[var(--input-radius)] bg-[var(--accent)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition-all duration-200 hover:bg-[var(--accent-hover)] hover:shadow-[var(--shadow-md)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-btn ui-btn--primary mt-2 h-11 w-full text-[13px] shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? (
                 <span className="flex items-center gap-2">

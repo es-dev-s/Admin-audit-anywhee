@@ -13,7 +13,14 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown } from "lucide-react";
 
-export type SelectOption = { value: string; label: string };
+export type SelectOption = {
+  value: string;
+  label: string;
+  /** Secondary line (e.g. profile org under member name). */
+  sublabel?: string;
+  /** Renders a small “Profile” chip before sublabel when set. */
+  sublabelKind?: "profile" | "org";
+};
 
 type PopoverCoords = {
   /** Open below trigger (top edge pinned) vs above (bottom edge pinned to trigger top). */
@@ -95,7 +102,6 @@ export function CustomSelect({
   const listboxId = id ?? `custom-select-${uid}`;
 
   const selected = options.find((o) => o.value === value);
-  const displayLabel = selected?.label ?? placeholder;
   const isPlaceholder = !selected || value === "";
 
   const syncHighlight = useCallback(() => {
@@ -115,7 +121,7 @@ export function CustomSelect({
     const r = el.getBoundingClientRect();
     const gap = 6;
     const margin = 8;
-    const maxList = 240;
+    const maxList = 320;
     const spaceBelow = window.innerHeight - r.bottom - gap - margin;
     const spaceAbove = r.top - gap - margin;
     const openDown = spaceBelow >= 120 || spaceBelow >= spaceAbove;
@@ -138,6 +144,8 @@ export function CustomSelect({
     }
     let left = r.left;
     let width = r.width;
+    const minWidth = Math.max(r.width, 220);
+    width = Math.max(minWidth, width);
     if (left + width > window.innerWidth - margin) {
       left = window.innerWidth - width - margin;
     }
@@ -304,7 +312,7 @@ export function CustomSelect({
   const text = size === "xs" || size === "sm" ? "text-xs" : "text-[13px]";
   const chevron = size === "md" ? 15 : 14;
 
-  const triggerLight = `${h} w-full flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 ${text} font-medium outline-none transition-[box-shadow,border-color] duration-200 focus-visible:border-[var(--accent)]/30 focus-visible:ring-2 focus-visible:ring-[var(--accent)]/15 focus-visible:shadow-[0_0_0_3px_rgba(59,125,214,0.06)] disabled:cursor-not-allowed disabled:opacity-50`;
+  const triggerLight = `${h} w-full flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 ${text} font-medium outline-none transition-[box-shadow,border-color] duration-200 focus-visible:border-[var(--accent)]/30 focus-visible:ring-2 focus-visible:ring-[var(--accent)]/15 focus-visible:shadow-[0_0_0_3px_var(--color-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50`;
   const triggerDark = `${h} w-full flex items-center justify-between gap-2 rounded-full border border-white/10 bg-white/[0.06] px-2.5 ${text} font-medium text-white/90 outline-none backdrop-blur-sm transition-colors hover:bg-white/[0.1] focus-visible:ring-2 focus-visible:ring-white/30 disabled:cursor-not-allowed disabled:opacity-50`;
 
   /** Scroll + chrome live on the fixed wrapper so maxHeight clips correctly (ul % height is unreliable). */
@@ -314,14 +322,71 @@ export function CustomSelect({
     "overflow-y-auto overflow-x-hidden rounded-xl border border-white/12 bg-[#1c1c1e]/95 py-1 shadow-lg backdrop-blur-xl";
 
   const itemLight = (active: boolean, chosen: boolean) =>
-    `flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors ${
+    `flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors ${
       active ? "bg-[var(--bg-subtle)]" : ""
-    } ${chosen ? "font-medium text-[var(--text-primary)]" : "text-[var(--text-secondary)]"}`;
+    } ${chosen ? "bg-[var(--color-accent-subtle)]/40" : ""}`;
 
   const itemDark = (active: boolean, chosen: boolean) =>
-    `flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors ${
+    `flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors ${
       active ? "bg-white/10" : ""
-    } ${chosen ? "font-medium text-white" : "text-white/75"}`;
+    } ${chosen ? "bg-white/[0.08]" : ""}`;
+
+  const renderOptionBody = (opt: SelectOption, chosen: boolean, variant: "light" | "dark") => (
+    <span className="min-w-0 flex-1">
+      <span className="block min-w-0">
+        {opt.sublabelKind === "profile" && opt.sublabel ? (
+          <span
+            className={`flex min-w-0 items-center gap-1.5 rounded-md border px-1.5 py-0.5 ${
+              variant === "dark"
+                ? "border-white/12 bg-white/[0.06]"
+                : "border-[var(--color-profile-primary-border)] bg-[var(--color-profile-primary-bg)]"
+            }`}
+          >
+            <span
+              className={`shrink-0 text-[9px] font-bold uppercase tracking-wide ${
+                variant === "dark" ? "text-white/50" : "text-[var(--color-group-highlight-muted)]"
+              }`}
+            >
+              Profile
+            </span>
+            <span
+              className={`min-w-0 truncate text-[12px] font-semibold ${
+                variant === "dark" ? "text-white/92" : "text-[var(--color-profile-primary)]"
+              }`}
+            >
+              {opt.sublabel}
+            </span>
+          </span>
+        ) : null}
+        <span
+          className={`block truncate leading-tight ${
+            opt.sublabelKind === "profile" && opt.sublabel
+              ? `mt-0.5 text-[11px] font-medium ${
+                  variant === "dark" ? "text-white/45" : "text-[var(--color-member-name-secondary)]"
+                }`
+              : `text-[13px] font-semibold ${
+                  variant === "dark"
+                    ? chosen
+                      ? "text-white"
+                      : "text-white/90"
+                    : "text-[var(--text-primary)]"
+                }`
+          }`}
+        >
+          {opt.label}
+        </span>
+      </span>
+      {opt.sublabel && opt.sublabelKind !== "profile" ? (
+        <span
+          className={`mt-0.5 block min-w-0 truncate text-[11px] font-medium ${
+            variant === "dark" ? "text-white/50" : "text-[var(--color-text-tertiary)]"
+          }`}
+        >
+          {opt.sublabel}
+        </span>
+      ) : null}
+    </span>
+  );
 
   const popover =
     open && options.length > 0 ? (
@@ -386,7 +451,7 @@ export function CustomSelect({
                     onMouseEnter={() => setHighlight(i)}
                     onClick={() => pick(opt.value)}
                   >
-                    <span className="min-w-0 flex-1 truncate">{opt.label}</span>
+                    {renderOptionBody(opt, chosen, variant)}
                     {chosen ? (
                       <Check
                         size={14}
@@ -421,19 +486,68 @@ export function CustomSelect({
         onKeyDown={onTriggerKeyDown}
         className={`${variant === "dark" ? triggerDark : triggerLight} ${triggerClassName}`}
       >
-        <span
-          className={`min-w-0 flex-1 truncate text-left ${
-            variant === "dark"
-              ? isPlaceholder
-                ? "text-white/50"
-                : "text-white/90"
-              : isPlaceholder
-                ? "text-[var(--text-tertiary)]"
-                : "text-[var(--text-primary)]"
-          }`}
-        >
-          {displayLabel}
-        </span>
+        {isPlaceholder || !selected ? (
+          <span
+            className={`min-w-0 flex-1 truncate text-left ${
+              variant === "dark" ? "text-white/50" : "text-[var(--text-tertiary)]"
+            }`}
+          >
+            {placeholder}
+          </span>
+        ) : selected.sublabel && selected.sublabelKind === "profile" ? (
+          <span className="min-w-0 flex-1 text-left">
+            <span className="flex min-w-0 items-center gap-1 truncate">
+              <span
+                className={`shrink-0 rounded px-1 py-px text-[8px] font-bold uppercase tracking-wide ${
+                  variant === "dark"
+                    ? "bg-white/12 text-white/50"
+                    : "text-[var(--color-group-highlight-muted)]"
+                }`}
+              >
+                Profile
+              </span>
+              <span
+                className={`min-w-0 truncate text-[11px] font-semibold ${
+                  variant === "dark" ? "text-white/90" : "text-[var(--color-profile-primary)]"
+                }`}
+              >
+                {selected.sublabel}
+              </span>
+            </span>
+            <span
+              className={`mt-0.5 block truncate text-[10px] font-medium ${
+                variant === "dark" ? "text-white/45" : "text-[var(--color-member-name-secondary)]"
+              }`}
+            >
+              {selected.label}
+            </span>
+          </span>
+        ) : selected.sublabel ? (
+          <span className="min-w-0 flex-1 text-left">
+            <span
+              className={`block truncate text-left font-semibold leading-tight ${
+                variant === "dark" ? "text-white/90" : "text-[var(--text-primary)]"
+              }`}
+            >
+              {selected.label}
+            </span>
+            <span
+              className={`mt-0.5 block truncate text-[10px] ${
+                variant === "dark" ? "text-white/45" : "text-[var(--color-text-tertiary)]"
+              }`}
+            >
+              {selected.sublabel}
+            </span>
+          </span>
+        ) : (
+          <span
+            className={`min-w-0 flex-1 truncate text-left font-medium ${
+              variant === "dark" ? "text-white/90" : "text-[var(--text-primary)]"
+            }`}
+          >
+            {selected.label}
+          </span>
+        )}
         <ChevronDown
           size={chevron}
           className={`shrink-0 opacity-50 transition-transform duration-200 ${open ? "rotate-180" : ""} ${variant === "dark" ? "text-white/60" : ""}`}

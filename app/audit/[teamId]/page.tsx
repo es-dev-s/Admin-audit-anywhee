@@ -2,10 +2,8 @@
 
 import {
   Info,
-  WifiOff,
   X,
   MonitorPlay,
-  Radio,
   User,
   UserPlus,
   BarChart3,
@@ -26,6 +24,8 @@ import { ShareAccessModal } from "@/components/audit/ShareAccessModal";
 import { useUIStore } from "@/store/uiStore";
 import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
 import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
+import { ClientRosterStatusBadge } from "@/components/audit/ClientRosterStatusBadge";
+import { classifyClientRosterStatus } from "@/lib/auditClientStatus";
 import type { AuditLiveClient } from "@/lib/auditTypes";
 import { auditStreamViewOpts } from "@/lib/auditStreamViewKey";
 import {
@@ -444,7 +444,7 @@ export default function TeamMembersPage() {
               <button
                 type="button"
                 onClick={() => setShareTeamOpen(true)}
-                className="inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-gray-100 hover:text-[var(--text-primary)]"
+                className="ui-btn ui-btn--sm shrink-0"
               >
                 <UserPlus size={14} className="opacity-70" />
                 Share team
@@ -483,7 +483,7 @@ export default function TeamMembersPage() {
                 type="button"
                 disabled={requestBusy}
                 onClick={() => void onRequestAccess()}
-                className="mt-4 inline-flex h-9 items-center rounded-lg bg-[var(--accent)] px-4 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="ui-btn ui-btn--primary mt-4 disabled:cursor-not-allowed"
               >
                 {requestBusy ? "Sending…" : "Request access"}
               </button>
@@ -547,9 +547,8 @@ export default function TeamMembersPage() {
             {/* Table rows */}
             <div className="flex flex-col">
               {visibleClients.map((client) => {
-                const isOnline =
-                  client.status === "online" || client.status === "sharing";
-                const isSharing = client.status === "sharing";
+                const rosterKind = classifyClientRosterStatus(client.status);
+                const isOnline = rosterKind === "online";
                 const wsSnap = getBrowserTabAnalytics(client.id);
                 const httpSnap = httpTabSnapshots.get(client.id);
                 const tabSnapshot = pickFresherTabSnapshot(wsSnap, httpSnap);
@@ -649,29 +648,8 @@ export default function TeamMembersPage() {
                     </div>
 
                     {/* Status */}
-                    <div className="flex items-center gap-2 pt-0.5">
-                      {isSharing ? (
-                        <>
-                          <Radio size={11} className="text-[var(--color-accent)]" />
-                          <span className="text-[11px] font-medium text-[var(--color-accent)]">
-                            Streaming
-                          </span>
-                        </>
-                      ) : isOnline ? (
-                        <>
-                          <div className="h-2 w-2 rounded-full bg-[var(--color-status-online)]" />
-                          <span className="text-[11px] font-medium text-[var(--color-text-secondary)]">
-                            Online
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <WifiOff size={11} className="text-[var(--color-text-muted)]" />
-                          <span className="text-[11px] text-[var(--color-text-muted)]">
-                            Offline
-                          </span>
-                        </>
-                      )}
+                    <div className="flex items-center pt-0.5">
+                      <ClientRosterStatusBadge status={client.status} />
                     </div>
 
                     {/* Device */}
@@ -688,7 +666,7 @@ export default function TeamMembersPage() {
                       >
                         <Link
                           href={`/audit/${orgId}/${client.id}/analytics`}
-                          className="inline-flex h-8 w-8 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/30"
+                          className="ui-btn ui-btn--icon-sm !rounded-none !border-0"
                           title="Browser analytics"
                           aria-label="Open browser analytics"
                         >
@@ -703,7 +681,7 @@ export default function TeamMembersPage() {
                             <button
                               type="button"
                               onClick={() => setShareMemberClient(client)}
-                              className="inline-flex h-8 w-8 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/30"
+                              className="ui-btn ui-btn--icon-sm !rounded-none !border-0"
                               title="Share access"
                               aria-label="Share access with a member"
                             >
@@ -712,11 +690,11 @@ export default function TeamMembersPage() {
                           </>
                         ) : null}
                       </div>
-                      {(isOnline || isSharing) && (
+                      {isOnline && (
                         <button
                           type="button"
                           onClick={() => setSelectedClient(client.id)}
-                          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-[var(--color-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
+                          className="ui-btn ui-btn--primary ui-btn--sm shrink-0"
                         >
                           <MonitorPlay size={14} strokeWidth={2} aria-hidden />
                           Observe

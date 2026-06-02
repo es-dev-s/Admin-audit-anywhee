@@ -13,7 +13,7 @@ export const metadata: Metadata = {
     apple: "/logo.ico",
   },
   other: {
-    "theme-color": "#F7F7F8",
+    "theme-color": "#0a0a0a",
   },
 };
 
@@ -23,7 +23,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full antialiased" style={{ colorScheme: "light" }}>
+    <html lang="en" className="h-full antialiased" style={{ colorScheme: "dark" }}>
       <body className="flex min-h-full flex-col bg-[var(--color-bg-page)] text-[var(--color-text-primary)]">
         <AuthProvider>
           <ToastProvider>{children}</ToastProvider>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   ChevronLeft,
@@ -28,6 +28,8 @@ import {
   tabRowKey,
 } from "@/lib/browserTabAnalyticsTypes";
 import { parseInteractionDetail } from "@/lib/parseInteractionDetail";
+import { auditAnalyticsPath } from "@/lib/auditNav";
+import { useAuditBackNav } from "@/hooks/useAuditBackNav";
 
 type FilterKind = "all" | AuditableKind;
 
@@ -77,8 +79,11 @@ function formatTs(ts: number): string {
 
 export default function BrowserActivityLogPage() {
   const params = useParams<{ teamId: string; memberId: string }>();
+  const searchParams = useSearchParams();
+  const from = searchParams.get("from");
   const orgId = Number(params.teamId);
   const clientId = Number(params.memberId);
+  const { backHref, backLabel } = useAuditBackNav(orgId, from);
 
   const streamAuth = useSignalingStreamAuth(orgId, clientId);
   const { getClient, getBrowserTabAnalytics, connectionStatus, signalingSessionToken } =
@@ -115,15 +120,10 @@ export default function BrowserActivityLogPage() {
 
   const parentAnalyticsHref = useMemo(() => {
     if (Number.isFinite(orgId) && orgId > 0 && Number.isFinite(clientId) && clientId > 0) {
-      return `/audit/${orgId}/${clientId}/analytics`;
+      return auditAnalyticsPath(orgId, clientId, from);
     }
     return "/audit";
-  }, [orgId, clientId]);
-
-  const backTeamHref = useMemo(() => {
-    if (Number.isFinite(orgId) && orgId > 0) return `/audit/${orgId}`;
-    return "/audit";
-  }, [orgId]);
+  }, [orgId, clientId, from]);
 
   /** Same rules as the client dashboard: auditable text lines only (hides tab aggregates, selector-only, etc.). */
   const auditableEvents = useMemo(() => {
@@ -193,10 +193,10 @@ export default function BrowserActivityLogPage() {
             <ChevronLeft size={14} /> Back to browser analytics
           </Link>
           <Link
-            href={backTeamHref}
+            href={backHref}
             className="inline-flex w-fit items-center gap-1 text-[11px] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-muted)]"
           >
-            Team overview
+            {backLabel}
           </Link>
         </div>
         <div

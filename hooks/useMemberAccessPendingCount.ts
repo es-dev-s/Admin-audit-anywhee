@@ -9,14 +9,15 @@ export function useMemberAccessPendingCount(enabled: boolean) {
 
   const refresh = useCallback(async () => {
     if (!enabled) {
-      setPendingCount(0);
+      setPendingCount((prev) => (prev === 0 ? prev : 0));
       return;
     }
     try {
       const res = await apiListMemberAccessRequests({ status: "pending" });
-      setPendingCount(res.pendingCount ?? 0);
+      const next = res.pendingCount ?? 0;
+      setPendingCount((prev) => (prev === next ? prev : next));
     } catch {
-      setPendingCount(0);
+      setPendingCount((prev) => (prev === 0 ? prev : 0));
     }
   }, [enabled]);
 

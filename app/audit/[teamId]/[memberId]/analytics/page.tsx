@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo } from "react";
 import { ChevronLeft } from "lucide-react";
 import { AnimatedPage } from "@/components/ui/AnimatedPage";
@@ -11,11 +11,16 @@ import { useBrowserTabSnapshotMerge } from "@/hooks/useBrowserTabSnapshotMerge";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
 import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
 import { useUIStore } from "@/store/uiStore";
+import { auditAnalyticsActivityPath } from "@/lib/auditNav";
+import { useAuditBackNav } from "@/hooks/useAuditBackNav";
 
 export default function MemberExtensionAnalyticsPage() {
   const params = useParams<{ teamId: string; memberId: string }>();
+  const searchParams = useSearchParams();
+  const from = searchParams.get("from");
   const orgId = Number(params.teamId);
   const clientId = Number(params.memberId);
+  const { backHref, backLabel } = useAuditBackNav(orgId, from);
 
   const streamAuth = useSignalingStreamAuth(orgId, clientId);
   const {
@@ -52,11 +57,6 @@ export default function MemberExtensionAnalyticsPage() {
     useUIStore.getState().setHeader("Browser analytics", headerSubtitle);
     return () => useUIStore.getState().setHeader("", "");
   }, [headerKey, orgId, clientId, headerSubtitle]);
-
-  const backHref = useMemo(() => {
-    if (Number.isFinite(orgId) && orgId > 0) return `/audit/${orgId}`;
-    return "/audit";
-  }, [orgId]);
 
   const teamClients = useMemo(
     () =>
@@ -107,7 +107,7 @@ export default function MemberExtensionAnalyticsPage() {
           href={backHref}
           className="inline-flex items-center gap-1 text-[12px] font-medium text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
         >
-          <ChevronLeft size={14} /> Back to team
+          <ChevronLeft size={14} /> {backLabel}
         </Link>
       </div>
       <ExtensionAnalyticsPanel
@@ -120,7 +120,7 @@ export default function MemberExtensionAnalyticsPage() {
         claimedOrgName={claimedOrgName}
         snapshot={snapshot}
         signalingConnected={live}
-        activityLogHref={`/audit/${orgId}/${clientId}/analytics/activity`}
+        activityLogHref={auditAnalyticsActivityPath(orgId, clientId, from)}
       />
     </AnimatedPage>
   );

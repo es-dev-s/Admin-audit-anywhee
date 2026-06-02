@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function NotFound() {
   return (
-    <div className="fixed inset-0 z-0 flex h-[100dvh] min-h-0 w-screen flex-col overflow-hidden bg-white">
+    <div className="fixed inset-0 z-0 flex h-[100dvh] min-h-0 w-screen flex-col overflow-hidden bg-[var(--color-bg-page)]">
       <div className="flex min-h-0 flex-1 items-center justify-center p-0">
         {/* eslint-disable-next-line @next/next/no-img-element -- entire image fits viewport (no crop) */}
         <img

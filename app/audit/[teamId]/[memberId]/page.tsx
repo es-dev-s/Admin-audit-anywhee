@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, Activity, BarChart3 } from "lucide-react";
@@ -11,14 +11,19 @@ import { useAuditSignaling } from "@/context/audit-signaling-context";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
 import { resolveClientEnrollmentOrg } from "@/lib/memberOrgDisplay";
 import { auditStreamViewOpts } from "@/lib/auditStreamViewKey";
+import { auditAnalyticsPath } from "@/lib/auditNav";
+import { useAuditBackNav } from "@/hooks/useAuditBackNav";
 
 function MemberLiveBody({
   orgId,
   clientId,
+  from,
 }: {
   orgId: number;
   clientId: number;
+  from: string | null;
 }) {
+  const { backHref } = useAuditBackNav(orgId, from);
   const [displayIdx, setDisplayIdx] = useState(0);
   const [activityOpen, setActivityOpen] = useState(false);
   const streamAuth = useSignalingStreamAuth(orgId, clientId);
@@ -82,7 +87,7 @@ function MemberLiveBody({
         <p className="text-[13px] font-medium text-[var(--color-text-secondary)]">Access denied</p>
         <p className="text-[12px] text-[var(--color-text-muted)]">{streamAuth.message}</p>
         <Link
-          href={`/audit/${orgId}`}
+          href={backHref}
           className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border-strong)] bg-[var(--color-bg-surface)] px-4 text-[12px] font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] transition-colors"
         >
           <ChevronLeft size={13} /> Back
@@ -96,13 +101,13 @@ function MemberLiveBody({
       {/* Floating back + analytics */}
       <div className="absolute top-4 left-4 z-20 flex flex-wrap items-center gap-2">
         <Link
-          href={`/audit/${orgId}`}
+          href={backHref}
           className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/[0.06] border border-white/[0.08] px-3 text-[11px] font-medium text-white/50 hover:bg-white/[0.12] hover:text-white/80 transition-all backdrop-blur-sm"
         >
           <ChevronLeft size={13} /> Back
         </Link>
         <Link
-          href={`/audit/${orgId}/${clientId}/analytics`}
+          href={auditAnalyticsPath(orgId, clientId, from ?? undefined)}
           className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/[0.06] border border-white/[0.08] px-3 text-[11px] font-medium text-white/50 hover:bg-white/[0.12] hover:text-white/80 transition-all backdrop-blur-sm"
         >
           <BarChart3 size={13} /> Analytics
@@ -160,6 +165,8 @@ function MemberLiveBody({
 
 export default function MemberScreenPage() {
   const { teamId, memberId } = useParams<{ teamId: string; memberId: string }>();
+  const searchParams = useSearchParams();
+  const from = searchParams.get("from");
   const orgId = Number(teamId);
   const clientId = Number(memberId);
 
@@ -171,5 +178,7 @@ export default function MemberScreenPage() {
     );
   }
 
-  return <MemberLiveBody key={clientId} orgId={orgId} clientId={clientId} />;
+  return (
+    <MemberLiveBody key={`${clientId}-${from ?? ""}`} orgId={orgId} clientId={clientId} from={from} />
+  );
 }

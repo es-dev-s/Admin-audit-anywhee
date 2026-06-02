@@ -26,7 +26,7 @@ type MemberRow = {
 };
 
 const inputClass =
-  "h-9 w-full rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none transition-[border-color,box-shadow] duration-200 focus:border-[var(--color-accent)]/40 focus:ring-2 focus:ring-[var(--color-accent)]/12 focus:shadow-[0_0_0_3px_rgba(59,125,214,0.08)]";
+  "h-9 w-full rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none transition-[border-color,box-shadow] duration-200 focus:border-[var(--color-accent)]/40 focus:ring-2 focus:ring-[var(--color-accent)]/12 focus:shadow-[0_0_0_3px_var(--color-focus-ring)]";
 
 export default function AuditMembersPage() {
   const { state } = useAuth();
@@ -179,11 +179,11 @@ export default function AuditMembersPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search members"
-              className="h-9 min-w-[240px] rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[12px] text-[var(--color-text-primary)] outline-none"
+              className="ui-input min-w-[240px]"
             />
             <button
               onClick={() => setCreateMode("member")}
-              className="inline-flex h-9 items-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-accent)] px-4 text-[12px] font-semibold text-[var(--color-text-inverse)] shadow-[var(--shadow-sm)] transition-all duration-200 hover:bg-[var(--color-accent-hover)] hover:shadow-[var(--shadow-md)] active:scale-[0.98]"
+              className="ui-btn ui-btn--primary"
             >
               <UserPlus size={14} /> Add Member
             </button>

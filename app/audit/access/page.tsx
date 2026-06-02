@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatedPage } from "@/components/ui/AnimatedPage";
 import { useAuth } from "@/context/auth-context";
-import { useAuditSignaling } from "@/context/audit-signaling-context";
+import { useAssignedGroups, useAuditSignaling } from "@/context/audit-signaling-context";
 import {
   apiAccessMatrix,
   apiAccessRevoke,
@@ -26,7 +26,13 @@ type AccessRow = {
 };
 
 type TeamSummary = { id: number; name: string };
-type ClientSummary = { id: number; name: string; orgId: number; orgName: string };
+type ClientSummary = {
+  id: number;
+  fullName: string;
+  profileOrg: string;
+  orgId: number;
+  signalingOrg: string;
+};
 
 function fmtDate(v: string | null) {
   if (!v) return "Never";
@@ -47,14 +53,15 @@ function arrayUnique(v: string[]) {
 export default function AccessMatrixPage() {
   const { state } = useAuth();
   const { orgs, clients: liveClients } = useAuditSignaling();
+  const assignedGroups = useAssignedGroups();
+  const hasGroupScope = assignedGroups.length > 0;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<AccessRow[]>([]);
   const [teams, setTeams] = useState<TeamSummary[]>([]);
   const [clients, setClients] = useState<ClientSummary[]>([]);
-  const [teamSelectionByUser, setTeamSelectionByUser] = useState<Record<string, string>>({});
-  const [clientSelectionByUser, setClientSelectionByUser] = useState<Record<string, string>>({});
+  const [memberSelectionByUser, setMemberSelectionByUser] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const canManage =
@@ -77,13 +84,19 @@ export default function AccessMatrixPage() {
       setTeams(teamList);
 
       setClients(
-        liveClients.map((c) => ({
-          id: c.id,
-          name: c.fullName || `Client ${c.id}`,
-          orgId: c.orgId,
-          orgName:
-            orgs.find((o) => o.id === c.orgId)?.name ?? c.orgName ?? `Team ${c.orgId}`,
-        }))
+        liveClients.map((c) => {
+          const profileOrg = (c.claimedOrgName || "").trim();
+          const signalingOrg =
+            (orgs.find((o) => o.id === c.orgId)?.name ?? c.orgName ?? "").trim() ||
+            (Number.isFinite(c.orgId) ? `Team ${c.orgId}` : "");
+          return {
+            id: c.id,
+            fullName: c.fullName?.trim() || `Client ${c.id}`,
+            profileOrg,
+            orgId: c.orgId,
+            signalingOrg,
+          };
+        }),
       );
 
       const memberMap = new Map(
@@ -205,30 +218,24 @@ export default function AccessMatrixPage() {
     }
   };
 
-  const grantTeamAccess = async (row: AccessRow) => {
-    const selected = teamSelectionByUser[row.userId];
-    if (!selected) return;
-    setBusyKey(`grant-team-${row.userId}`);
-    try {
-      await apiAccessShare({
-        recipientMode: "audit_member",
-        targetUserId: row.userId,
-        shareScope: "team",
-        signalingOrgId: Number(selected),
-      });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to grant team access");
-    } finally {
-      setBusyKey(null);
-    }
-  };
+  const memberSelectOptions = useMemo(
+    () => [
+      { value: "", label: "Select member…" },
+      ...clients.map((c) => ({
+        value: String(c.id),
+        label: c.fullName,
+        sublabel: c.profileOrg || c.signalingOrg || undefined,
+        sublabelKind: c.profileOrg ? ("profile" as const) : ("org" as const),
+      })),
+    ],
+    [clients],
+  );
 
-  const grantClientAccess = async (row: AccessRow) => {
-    const selected = clientSelectionByUser[row.userId];
+  const grantMemberAccess = async (row: AccessRow) => {
+    const selected = memberSelectionByUser[row.userId];
     const mapped = clients.find((c) => String(c.id) === selected);
     if (!mapped) return;
-    setBusyKey(`grant-client-${row.userId}`);
+    setBusyKey(`grant-member-${row.userId}`);
     try {
       await apiAccessShare({
         recipientMode: "audit_member",
@@ -237,12 +244,12 @@ export default function AccessMatrixPage() {
         signalingOrgId: mapped.orgId,
         signalClientId: mapped.id,
         memberUserId: row.userId,
-        liveTeamName: mapped.orgName,
-        liveMemberName: mapped.name,
+        liveTeamName: mapped.signalingOrg,
+        liveMemberName: mapped.fullName,
       });
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to grant client access");
+      setError(e instanceof Error ? e.message : "Failed to grant member access");
     } finally {
       setBusyKey(null);
     }
@@ -270,10 +277,9 @@ export default function AccessMatrixPage() {
               Member Access Control
             </h1>
             <p className="mt-1 text-[13px] text-[var(--color-text-secondary)]">
-              Review and manage team and client stream access for all audit members.
-            </p>
-            <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
-              Teams loaded: {teams.length} · Live clients loaded: {clients.length}
+              {hasGroupScope
+                ? "Grant access only within your assigned audit groups — organizations and clients outside that scope are hidden."
+                : "Review and manage organization and client stream access for audit members."}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -281,13 +287,13 @@ export default function AccessMatrixPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search member, email, organization…"
-              className="h-9 min-w-[280px] rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[12px] text-[var(--color-text-primary)] outline-none"
+              className="ui-input min-w-[280px]"
             />
             <button
               type="button"
               onClick={() => void load()}
               disabled={loading}
-              className="inline-flex h-9 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] px-3 text-[12px] font-medium text-[var(--color-text-secondary)]"
+              className="ui-btn"
             >
               <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
               Refresh
@@ -302,12 +308,12 @@ export default function AccessMatrixPage() {
         ) : null}
 
         <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]">
-          <div className="grid grid-cols-[2fr_1fr_1.3fr_1.3fr_1.5fr] border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-surface-2)] px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
-            <div>Member</div>
-            <div>Directory Org</div>
-            <div>Live Team Access</div>
-            <div>Client Stream Access</div>
-            <div>Grant / Revoke</div>
+          <div className="hidden border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-surface-2)] px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)] lg:grid lg:grid-cols-[2fr_1fr_1.2fr_1.2fr_1.4fr] lg:gap-3">
+            <div>Audit member</div>
+            <div>Directory org</div>
+            <div>Team access</div>
+            <div>Stream access</div>
+            <div>Grant / revoke</div>
           </div>
           {loading ? (
             <div className="p-8 text-center text-[13px] text-[var(--color-text-muted)]">Loading access…</div>
@@ -316,7 +322,10 @@ export default function AccessMatrixPage() {
           ) : (
             <div className="divide-y divide-[var(--color-border-subtle)]">
               {filteredRows.map((row) => (
-                <div key={row.userId} className="grid grid-cols-[2fr_1fr_1.3fr_1.3fr_1.5fr] gap-3 px-4 py-4 text-[12px]">
+                <div
+                  key={row.userId}
+                  className="flex flex-col gap-4 px-4 py-4 text-[12px] lg:grid lg:grid-cols-[2fr_1fr_1.2fr_1.2fr_1.4fr] lg:items-start lg:gap-3"
+                >
                   <div>
                     <p className="font-semibold text-[var(--color-text-primary)]">{row.memberName}</p>
                     <p className="text-[var(--color-text-muted)]">{row.memberEmail ?? "—"}</p>
@@ -330,6 +339,9 @@ export default function AccessMatrixPage() {
                     </span>
                   </div>
                   <div className="flex flex-wrap items-start gap-1">
+                    <p className="mb-1 w-full text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)] lg:hidden">
+                      Team access
+                    </p>
                     {row.signalingOrgIds.length === 0 ? (
                       <span className="text-[var(--color-text-muted)]">No team access</span>
                     ) : (
@@ -352,6 +364,9 @@ export default function AccessMatrixPage() {
                     )}
                   </div>
                   <div className="flex flex-wrap items-start gap-1">
+                    <p className="mb-1 w-full text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)] lg:hidden">
+                      Stream access
+                    </p>
                     {row.signalClientIds.length === 0 ? (
                       <span className="text-[var(--color-text-muted)]">No stream access</span>
                     ) : (
@@ -363,69 +378,56 @@ export default function AccessMatrixPage() {
                             type="button"
                             disabled={!c || busyKey === `revoke-client-${row.userId}-${cid}`}
                             onClick={() => void revokeClientAccess(row, cid)}
-                            className="inline-flex items-center gap-1 rounded-full border border-[var(--color-status-pending-border)] bg-[var(--color-status-pending-bg)] px-2 py-0.5 text-[11px] text-[var(--color-status-pending-text)] disabled:opacity-50"
-                            title={c ? "Click to revoke this client access" : "Client not currently resolvable"}
+                            className="inline-flex max-w-full flex-col items-start gap-0.5 rounded-lg border border-[var(--color-status-pending-border)] bg-[var(--color-status-pending-bg)] px-2 py-1 text-left text-[11px] text-[var(--color-status-pending-text)] disabled:opacity-50"
+                            title={c ? "Click to revoke stream access" : "Member not currently in roster"}
                           >
-                            <ShieldX size={11} />
-                            {c?.name ?? `Client ${cid}`}
+                            <span className="inline-flex items-center gap-1 font-semibold">
+                              <ShieldX size={11} className="shrink-0" />
+                              {c?.fullName ?? `Client ${cid}`}
+                            </span>
+                            {c?.profileOrg || c?.signalingOrg ? (
+                              <span className="flex items-center gap-1 pl-4 text-[10px] opacity-90">
+                                {c.profileOrg ? (
+                                  <span className="rounded px-1 py-px text-[8px] font-bold uppercase tracking-wide bg-black/10">
+                                    Profile
+                                  </span>
+                                ) : null}
+                                <span className="truncate">{c.profileOrg || c.signalingOrg}</span>
+                              </span>
+                            ) : null}
                           </button>
                         );
                       })
                     )}
                   </div>
-                  <div className="space-y-2">
-                    <div className="flex gap-1">
+                  <div className="min-w-0 space-y-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)] lg:hidden">
+                      Grant / revoke
+                    </p>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
                       <CustomSelect
                         size="sm"
-                        value={teamSelectionByUser[row.userId] ?? ""}
+                        value={memberSelectionByUser[row.userId] ?? ""}
                         onValueChange={(v) =>
-                          setTeamSelectionByUser((s) => ({ ...s, [row.userId]: v }))
+                          setMemberSelectionByUser((s) => ({ ...s, [row.userId]: v }))
                         }
-                        options={[
-                          { value: "", label: "Select team…" },
-                          ...teams.map((t) => ({
-                            value: String(t.id),
-                            label: t.name,
-                          })),
-                        ]}
-                        className="min-w-0 flex-1"
-                      />
-                      <button
-                        type="button"
-                        disabled={!teamSelectionByUser[row.userId] || busyKey === `grant-team-${row.userId}`}
-                        onClick={() => void grantTeamAccess(row)}
-                        className="inline-flex h-8 items-center gap-1 rounded-[var(--radius-md)] bg-[var(--color-accent)] px-2 text-[11px] font-semibold text-white disabled:opacity-50"
-                      >
-                        <KeyRound size={11} />
-                        Grant Team
-                      </button>
-                    </div>
-                    <div className="flex gap-1">
-                      <CustomSelect
-                        size="sm"
-                        value={clientSelectionByUser[row.userId] ?? ""}
-                        onValueChange={(v) =>
-                          setClientSelectionByUser((s) => ({ ...s, [row.userId]: v }))
-                        }
-                        options={[
-                          { value: "", label: "Select client…" },
-                          ...clients.map((c) => ({
-                            value: String(c.id),
-                            label: `${c.name} - ${c.orgName}`,
-                          })),
-                        ]}
-                        className="min-w-0 flex-1"
+                        options={memberSelectOptions}
+                        placeholder="Select member…"
+                        aria-label={`Select live member for ${row.memberName}`}
+                        className="min-w-0 w-full flex-1 sm:min-w-[200px]"
+                        triggerClassName="!h-auto min-h-9 py-1.5"
                       />
                       <button
                         type="button"
                         disabled={
-                          !clientSelectionByUser[row.userId] || busyKey === `grant-client-${row.userId}`
+                          !memberSelectionByUser[row.userId] ||
+                          busyKey === `grant-member-${row.userId}`
                         }
-                        onClick={() => void grantClientAccess(row)}
-                        className="inline-flex h-8 items-center gap-1 rounded-[var(--radius-md)] border border-[var(--color-accent)] bg-[var(--color-accent-subtle)] px-2 text-[11px] font-semibold text-[var(--color-accent)] disabled:opacity-50"
+                        onClick={() => void grantMemberAccess(row)}
+                        className="ui-btn ui-btn--primary ui-btn--sm shrink-0 sm:min-w-[108px]"
                       >
                         <KeyRound size={11} />
-                        Grant Client
+                        Grant access
                       </button>
                     </div>
                   </div>

@@ -8,7 +8,7 @@ export type LiveFeedLayoutPreset = {
 
 export const LIVE_FEED_LAYOUTS: LiveFeedLayoutPreset[] = [
   { id: "1", label: "1 screen", cols: 1, rows: 1, slots: 1 },
-  { id: "2", label: "1×2 L+R", cols: 2, rows: 1, slots: 2 },
+  { id: "2", label: "1×2 Dual", cols: 2, rows: 1, slots: 2 },
   { id: "4", label: "2×2", cols: 2, rows: 2, slots: 4 },
   { id: "6", label: "3×2", cols: 3, rows: 2, slots: 6 },
   { id: "9", label: "3×3", cols: 3, rows: 3, slots: 9 },

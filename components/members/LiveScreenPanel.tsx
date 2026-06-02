@@ -29,27 +29,9 @@ type LiveScreenPanelProps = {
   onDisplayChange?: (sourceId: string, index: number) => void;
   /** Tight surveillance tile: edge-to-edge video, minimal chrome */
   surveillanceTile?: boolean;
+  /** Live feed tiles: static connecting state (no spinner animation). */
+  surveillanceConnectingStatic?: boolean;
 };
-
-function DesktopSkeleton() {
-  return (
-    <div className="absolute inset-[6%] flex flex-col gap-2 overflow-hidden rounded-lg p-2 sm:inset-[8%]">
-      <div className="h-8 w-full shrink-0 rounded-md shimmer-bg sm:h-9" />
-      <div className="grid min-h-0 flex-1 grid-cols-[3fr_2fr] gap-2">
-        <div className="flex min-h-0 flex-col gap-2">
-          <div className="min-h-[42%] rounded-md shimmer-bg" />
-          <div className="min-h-0 flex-1 rounded-md shimmer-bg" />
-        </div>
-        <div className="flex min-h-0 flex-col gap-2">
-          <div className="h-14 rounded-md shimmer-bg sm:h-16" />
-          <div className="h-14 rounded-md shimmer-bg sm:h-16" />
-          <div className="min-h-0 flex-1 rounded-md shimmer-bg" />
-        </div>
-      </div>
-      <div className="h-12 w-full shrink-0 rounded-md shimmer-bg sm:h-14" />
-    </div>
-  );
-}
 
 export function LiveScreenPanel({
   title,
@@ -67,6 +49,7 @@ export function LiveScreenPanel({
   displayIndex = 0,
   onDisplayChange,
   surveillanceTile = false,
+  surveillanceConnectingStatic = false,
 }: LiveScreenPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -304,22 +287,26 @@ export function LiveScreenPanel({
               muted
               aria-label={`${memberName}'s screen share`}
               className={cn(
-                "absolute inset-0 h-full w-full bg-black transition-opacity duration-300 ease-out",
+                "absolute inset-0 h-full w-full bg-black",
                 surveillanceTile
                   ? "object-cover object-center"
-                  : "object-contain object-center",
+                  : "object-contain object-center transition-opacity duration-300 ease-out",
               )}
               style={{ opacity: showVideo ? 1 : 0 }}
             />
           ) : null}
 
           {connecting ? (
-            <div className="absolute inset-0 z-[1]">
-              <DesktopSkeleton />
-              <div className="absolute inset-0 z-[2] flex flex-col items-center justify-center gap-3 bg-black/30">
-                <span className="h-6 w-6 shrink-0 animate-spin rounded-full border-2 border-white/10 border-t-[var(--color-accent)]" aria-hidden />
-                <p className="text-[12px] text-white/40">Establishing stream…</p>
-              </div>
+            <div className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-3 bg-black/50">
+              {surveillanceConnectingStatic ? (
+                <span className="h-2 w-2 shrink-0 rounded-full bg-white/35" aria-hidden />
+              ) : (
+                <span
+                  className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-white/15 border-t-white/70"
+                  aria-hidden
+                />
+              )}
+              <p className="text-[12px] font-medium text-white/45">Establishing stream…</p>
             </div>
           ) : null}
 

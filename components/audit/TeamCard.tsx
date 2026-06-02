@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "framer-motion";
 import { ChevronRight, Users, Radio } from "lucide-react";
 
 export type LiveTeamCardProps = {
@@ -10,20 +9,14 @@ export type LiveTeamCardProps = {
   memberCount: number;
   onlineCount: number;
   sharingCount: number;
-  animationDelayMs?: number;
 };
 
 export function TeamCard({
-  orgId, name, memberCount, onlineCount, sharingCount, animationDelayMs = 0,
+  orgId, name, memberCount, onlineCount, sharingCount,
 }: LiveTeamCardProps) {
   return (
     <Link href={`/audit/${orgId}`} className="block rounded-[var(--radius-xl)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-base)]">
-      <motion.article
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35, ease: [0.32, 0.72, 0, 1], delay: animationDelayMs / 1000 }}
-        className="group relative flex cursor-pointer flex-col overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-bg-surface)] p-5 shadow-[var(--shadow-xs)] transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] hover:-translate-y-0.5 hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)] hover:shadow-[var(--shadow-md)] active:translate-y-0 active:shadow-[var(--shadow-sm)]"
-      >
+      <article className="ui-stable-card group relative flex cursor-pointer flex-col overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-bg-surface)] p-5 shadow-[var(--shadow-xs)]">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-bg-elevated)] transition-colors duration-300 group-hover:border-[var(--color-border-strong)] group-hover:bg-[var(--color-bg-surface)]">
@@ -54,7 +47,15 @@ export function TeamCard({
         <div className="mt-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5">
-              <div className={`h-2 w-2 rounded-full ${onlineCount > 0 ? "bg-[var(--color-status-online)]" : "bg-[var(--color-text-muted)]"}`} />
+              <div
+                className={`h-2 w-2 rounded-full ${
+                  onlineCount > 0
+                    ? "bg-[var(--color-status-online)]"
+                    : memberCount > 0
+                      ? "bg-[var(--color-status-offline)]"
+                      : "bg-[var(--color-status-unknown)]"
+                }`}
+              />
               <span className="text-[11px] text-[var(--color-text-muted)]">{onlineCount} online</span>
             </div>
           </div>
@@ -63,7 +64,7 @@ export function TeamCard({
             <ChevronRight size={14} strokeWidth={2} />
           </div>
         </div>
-      </motion.article>
+      </article>
     </Link>
   );
 }

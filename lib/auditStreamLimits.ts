@@ -14,13 +14,13 @@ export const MAX_CONCURRENT_ACTIVE_STREAMS = parsePositive(
 /** Max parallel `connect-to-client` negotiations (stagger the rest). */
 export const MAX_PARALLEL_STREAM_CONNECTS = parsePositive(
   process.env.NEXT_PUBLIC_MAX_PARALLEL_STREAM_CONNECTS,
-  4,
+  6,
 );
 
 /** Delay between starting each connect in a batch (ms). */
 export const STREAM_CONNECT_STAGGER_MS = parsePositive(
   process.env.NEXT_PUBLIC_STREAM_CONNECT_STAGGER_MS,
-  400,
+  300,
 );
 
 export function countActiveStreamInterests(interest: Map<string, number>): number {

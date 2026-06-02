@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Building2 } from "lucide-react";
 import { AnimatedPage } from "@/components/ui/AnimatedPage";
+import { useAssignedGroupsScope } from "@/context/audit-signaling-context";
 import { useAuth } from "@/context/auth-context";
 import {
   apiCreateAuditOrganization,
@@ -13,10 +15,12 @@ import Link from "next/link";
 type OrgRow = { id: string; name: string; created_at: string };
 
 const inputClass =
-  "h-9 w-full rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none transition-[border-color,box-shadow] duration-200 focus:border-[var(--color-accent)]/40 focus:ring-2 focus:ring-[var(--color-accent)]/12 focus:shadow-[0_0_0_3px_rgba(59,125,214,0.08)]";
+  "h-9 w-full rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none transition-[border-color,box-shadow] duration-200 focus:border-[var(--color-accent)]/40 focus:ring-2 focus:ring-[var(--color-accent)]/12 focus:shadow-[0_0_0_3px_var(--color-focus-ring)]";
 
 export default function AuditOrganizationsPage() {
+  const router = useRouter();
   const { state } = useAuth();
+  const { ready: scopeReady, hasGroupScope } = useAssignedGroupsScope();
   const [orgs, setOrgs] = useState<OrgRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -39,9 +43,15 @@ export default function AuditOrganizationsPage() {
     state.status === "authenticated" && state.user.role === "team_lead";
 
   useEffect(() => {
-    if (!canManageMembers) return;
+    if (scopeReady && hasGroupScope) {
+      router.replace("/audit");
+    }
+  }, [scopeReady, hasGroupScope, router]);
+
+  useEffect(() => {
+    if (!canManageMembers || !scopeReady || hasGroupScope) return;
     void refresh();
-  }, [canManageMembers, refresh]);
+  }, [canManageMembers, scopeReady, hasGroupScope, refresh]);
 
   const createOrg = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,12 +117,12 @@ export default function AuditOrganizationsPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search organizations"
-              className="h-9 min-w-[220px] rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-input)] px-3 text-[12px] text-[var(--color-text-primary)] outline-none"
+              className="ui-input min-w-[220px]"
             />
             <button
               type="button"
               onClick={() => setCreateMode(true)}
-              className="inline-flex h-9 items-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-accent)] px-4 text-[12px] font-semibold text-[var(--color-text-inverse)] shadow-[var(--shadow-xs)] transition-all duration-200 hover:bg-[var(--color-accent-hover)] active:scale-[0.98]"
+              className="ui-btn ui-btn--primary"
             >
               <Building2 size={14} /> Create Organization
             </button>

@@ -62,11 +62,11 @@ const CONFIG: Record<
     text: "text-[var(--color-status-error-text)]",
   },
   warning: {
-    label: "Warning",
-    dot: "bg-[var(--color-status-warning)]",
-    bg: "bg-[var(--color-status-warning-bg)]",
-    border: "border-[var(--color-status-warning-border)]",
-    text: "text-[var(--color-status-warning-text)]",
+    label: "Unknown",
+    dot: "bg-[var(--color-status-unknown)]",
+    bg: "bg-[var(--color-status-unknown-bg)]",
+    border: "border-[var(--color-status-unknown-border)]",
+    text: "text-[var(--color-status-unknown-text)]",
   },
 };
 

@@ -38,6 +38,17 @@ import {
   clientIdFromViewKey,
   type AuditStreamViewOptions,
 } from "@/lib/auditStreamViewKey";
+import { streamSignalingKey } from "@/lib/streamSignalingKey";
+
+import {
+  applyStreamTransportToRefs,
+  attachIcePhases,
+  parseStreamTransport,
+  sfuSubscriberHint,
+  type StreamTransportPlan,
+} from "@/lib/auditStreamTransport";
+import { handleSfuApiResponse } from "@/lib/cloudflareSfuApi";
+import { subscribeCloudflareSfu } from "@/lib/auditCloudflareSfu";
 
 const DEFAULT_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 const STREAM_CONNECT_TIMEOUT_MS = 45_000;
@@ -160,6 +171,32 @@ export type AuditSignalingContextValue = {
 
 const AuditSignalingContext = createContext<AuditSignalingContextValue | null>(null);
 
+/** Sidebar-only: updates when admin-assigned groups change, not on every roster tick. */
+export type AssignedAuditGroup = AuditSignalingContextValue["assignedGroups"][number];
+
+export type AssignedGroupsScope = {
+  groups: AssignedAuditGroup[];
+  /** False for team leads until group scope API finishes (avoids sidebar flicker). */
+  ready: boolean;
+  hasGroupScope: boolean;
+};
+
+const defaultAssignedGroupsScope: AssignedGroupsScope = {
+  groups: [],
+  ready: true,
+  hasGroupScope: false,
+};
+
+const AssignedGroupsContext = createContext<AssignedGroupsScope>(defaultAssignedGroupsScope);
+
+export function useAssignedGroups(): AssignedAuditGroup[] {
+  return useContext(AssignedGroupsContext).groups;
+}
+
+export function useAssignedGroupsScope(): AssignedGroupsScope {
+  return useContext(AssignedGroupsContext);
+}
+
 /** Use in layouts without `AuditSignalingProvider` (e.g. team-lead). */
 export function useOptionalAuditSignaling(): AuditSignalingContextValue | null {
   return useContext(AuditSignalingContext);
@@ -235,9 +272,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const sessionTokenRef = useRef<string | null>(null);
   const [signalingSessionToken, setSignalingSessionToken] = useState<string | null>(null);
   const iceServersRef = useRef<RTCIceServer[]>([]);
-  const pcByClientSocketRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const iceStunOnlyRef = useRef<RTCIceServer[]>([]);
+  const iceFullRef = useRef<RTCIceServer[]>([]);
+  const icePhaseCleanupByViewKeyRef = useRef<Map<string, () => void>>(new Map());
+  const pcByViewKeyRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const clientSocketByViewKeyRef = useRef<Map<string, string>>(new Map());
-  const socketIdToViewKeyRef = useRef<Map<string, string>>(new Map());
   const pendingViewKeyByClientRef = useRef<Map<number, string[]>>(new Map());
   const interestRef = useRef<Map<string, number>>(new Map());
   const prefsRef = useRef<Map<string, AuditStreamViewOptions>>(new Map());
@@ -248,8 +287,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const connectQueueRef = useRef<string[]>([]);
   const connectQueueScheduledRef = useRef(false);
   const connectInFlightRef = useRef(0);
-  const iceDedupByClientSocketRef = useRef<Map<string, Set<string>>>(new Map());
-  const pendingIceByClientSocketRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const iceDedupByViewKeyRef = useRef<Map<string, Set<string>>>(new Map());
+  const pendingIceByViewKeyRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const sfuCleanupByViewKeyRef = useRef<Map<string, () => void>>(new Map());
+  const pendingSfuByViewKeyRef = useRef<
+    Map<string, { clientSocketId: string; clientId: number; plan: StreamTransportPlan }>
+  >(new Map());
 
   const [connectionStatus, setConnectionStatus] = useState("Initializing…");
   const connectionStatusRef = useRef(connectionStatus);
@@ -271,19 +314,39 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     sock.send(JSON.stringify(payload));
   }, []);
 
-  const teardownPeerForClientSocket = useCallback((clientSocketId: string) => {
-    const pc = pcByClientSocketRef.current.get(clientSocketId);
+  const teardownMeshPeerForViewKey = useCallback((viewKey: string) => {
+    icePhaseCleanupByViewKeyRef.current.get(viewKey)?.();
+    icePhaseCleanupByViewKeyRef.current.delete(viewKey);
+    const pc = pcByViewKeyRef.current.get(viewKey);
     if (pc) {
       try {
         pc.close();
       } catch {
         /* ignore */
       }
-      pcByClientSocketRef.current.delete(clientSocketId);
+      pcByViewKeyRef.current.delete(viewKey);
     }
-    iceDedupByClientSocketRef.current.delete(clientSocketId);
-    pendingIceByClientSocketRef.current.delete(clientSocketId);
+    iceDedupByViewKeyRef.current.delete(viewKey);
+    pendingIceByViewKeyRef.current.delete(viewKey);
   }, []);
+
+  const hasActiveInterestForClientSocket = useCallback((clientSocketId: string) => {
+    for (const [viewKey, sid] of clientSocketByViewKeyRef.current.entries()) {
+      if (sid === clientSocketId && (interestRef.current.get(viewKey) ?? 0) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }, []);
+
+  const teardownPeerForClientSocket = useCallback(
+    (clientSocketId: string) => {
+      for (const [viewKey, sid] of [...clientSocketByViewKeyRef.current.entries()]) {
+        if (sid === clientSocketId) teardownMeshPeerForViewKey(viewKey);
+      }
+    },
+    [teardownMeshPeerForViewKey],
+  );
 
   const removeFromConnectQueue = useCallback((viewKey: string) => {
     connectQueueRef.current = connectQueueRef.current.filter((k) => k !== viewKey);
@@ -304,16 +367,26 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const teardownSfuForViewKey = useCallback((viewKey: string) => {
+    pendingSfuByViewKeyRef.current.delete(viewKey);
+    const cleanup = sfuCleanupByViewKeyRef.current.get(viewKey);
+    if (cleanup) {
+      try {
+        cleanup();
+      } catch {
+        /* ignore */
+      }
+      sfuCleanupByViewKeyRef.current.delete(viewKey);
+    }
+  }, []);
+
   const teardownPeerForViewKey = useCallback(
     (viewKey: string) => {
       clearStreamConnectTimeout(viewKey);
       streamTrackReceivedRef.current.delete(viewKey);
-      const sid = clientSocketByViewKeyRef.current.get(viewKey);
-      if (sid) {
-        socketIdToViewKeyRef.current.delete(sid);
-        teardownPeerForClientSocket(sid);
-        clientSocketByViewKeyRef.current.delete(viewKey);
-      }
+      teardownSfuForViewKey(viewKey);
+      teardownMeshPeerForViewKey(viewKey);
+      clientSocketByViewKeyRef.current.delete(viewKey);
       setStreams((prev) => {
         if (!prev.has(viewKey)) return prev;
         const next = new Map(prev);
@@ -321,7 +394,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         return next;
       });
     },
-    [clearStreamConnectTimeout, teardownPeerForClientSocket],
+    [clearStreamConnectTimeout, teardownMeshPeerForViewKey, teardownSfuForViewKey],
   );
 
   const teardownAllViewsForClientId = useCallback(
@@ -373,6 +446,151 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     [clearConnectRetry, teardownPeerForViewKey],
   );
 
+  const startMeshView = useCallback(
+    async (
+      viewKey: string,
+      clientSocketId: string,
+      clientId: number,
+      transportPlan: StreamTransportPlan | null,
+    ) => {
+      teardownSfuForViewKey(viewKey);
+      const ice = iceServersRef.current.length > 0 ? iceServersRef.current : DEFAULT_ICE;
+      const stunOnly = iceStunOnlyRef.current.length > 0 ? iceStunOnlyRef.current : ice;
+      const fullIce = iceFullRef.current.length > 0 ? iceFullRef.current : ice;
+      teardownMeshPeerForViewKey(viewKey);
+      const pc = createAuditPeerConnection(ice);
+      pcByViewKeyRef.current.set(viewKey, pc);
+      const mode = transportPlan?.mode === "turn-relay" ? "turn-relay" : transportPlan?.mode;
+      if (mode === "p2p-preferred" || !mode) {
+        const cleanup = attachIcePhases(pc, stunOnly, fullIce, transportPlan?.phaseOneMs ?? 5000);
+        icePhaseCleanupByViewKeyRef.current.set(viewKey, cleanup);
+      } else {
+        icePhaseCleanupByViewKeyRef.current.delete(viewKey);
+      }
+      iceDedupByViewKeyRef.current.set(viewKey, createCandidateDedupeSet());
+      pendingIceByViewKeyRef.current.set(viewKey, []);
+      pc.addTransceiver("video", { direction: "recvonly" });
+      pc.ontrack = (trackEvent) => {
+        const stream = trackEvent.streams[0] ?? new MediaStream([trackEvent.track]);
+        const resolvedViewKey = viewKey;
+        if (!resolvedViewKey) return;
+        streamTrackReceivedRef.current.add(resolvedViewKey);
+        clearStreamConnectTimeout(resolvedViewKey);
+        setStreams((prev) => {
+          const next = new Map(prev);
+          next.set(resolvedViewKey, stream);
+          return next;
+        });
+        const cid = clientIdFromViewKey(resolvedViewKey);
+        if (Number.isFinite(cid) && cid > 0) {
+          const remaining = pendingViewKeyByClientRef.current.get(cid) ?? [];
+          const nextKey = remaining.find(
+            (k) =>
+              (interestRef.current.get(k) ?? 0) > 0 && !clientSocketByViewKeyRef.current.has(k),
+          );
+          if (nextKey) queueMicrotask(() => connectSignalingRequestRef.current(nextKey));
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState !== "failed" && pc.connectionState !== "disconnected") return;
+        const vk = viewKey;
+        if (streamTrackReceivedRef.current.has(vk)) return;
+        failClientStream(vk, `WebRTC ${pc.connectionState} — check TURN on signaling server.`);
+      };
+      pc.onicecandidate = (iceEvent) => {
+        if (!iceEvent.candidate) return;
+        send({
+          type: "ice-candidate",
+          targetSocketId: clientSocketId,
+          streamKey: viewKey,
+          candidate: iceEvent.candidate.toJSON(),
+        });
+      };
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        const pref = viewKey ? prefsRef.current.get(viewKey) : undefined;
+        send({
+          type: "offer",
+          targetSocketId: clientSocketId,
+          streamKey: viewKey,
+          sdp: offer,
+          ...(pref?.preferredSourceId ? { preferredSourceId: pref.preferredSourceId } : {}),
+          ...(pref?.preferredSourceIndex != null
+            ? { preferredSourceIndex: pref.preferredSourceIndex }
+            : {}),
+        });
+      } catch (e) {
+        console.error("[audit] createOffer failed", e);
+      }
+    },
+    [
+      clearStreamConnectTimeout,
+      failClientStream,
+      send,
+      teardownMeshPeerForViewKey,
+      teardownSfuForViewKey,
+    ],
+  );
+
+  const startSfuView = useCallback(
+    async (
+      viewKey: string,
+      clientSocketId: string,
+      clientId: number,
+      plan: StreamTransportPlan | null,
+      publisherSessionId?: string,
+      publisherLane?: number,
+    ) => {
+      const hint = sfuSubscriberHint(plan, publisherSessionId);
+      if (!hint) {
+        pendingSfuByViewKeyRef.current.set(viewKey, { clientSocketId, clientId, plan: plan ?? {} });
+        return;
+      }
+      if (publisherLane === 1 || publisherLane === 2) {
+        hint.providerLane = publisherLane;
+      }
+      pendingSfuByViewKeyRef.current.delete(viewKey);
+      teardownSfuForViewKey(viewKey);
+      teardownMeshPeerForViewKey(viewKey);
+      try {
+        const cleanup = await subscribeCloudflareSfu(send, hint, (stream) => {
+          streamTrackReceivedRef.current.add(viewKey);
+          clearStreamConnectTimeout(viewKey);
+          setStreams((prev) => {
+            const next = new Map(prev);
+            next.set(viewKey, stream);
+            return next;
+          });
+          const remaining = pendingViewKeyByClientRef.current.get(clientId) ?? [];
+          const nextKey = remaining.find(
+            (k) =>
+              (interestRef.current.get(k) ?? 0) > 0 &&
+              !clientSocketByViewKeyRef.current.has(k),
+          );
+          if (nextKey) queueMicrotask(() => connectSignalingRequestRef.current(nextKey));
+        });
+        sfuCleanupByViewKeyRef.current.set(viewKey, cleanup);
+      } catch (e) {
+        console.warn("[audit] SFU lanes failed, falling back to TURN/mesh", e);
+        const fallbackPlan: StreamTransportPlan = {
+          ...(plan ?? {}),
+          mode: "turn-relay",
+          sfu: undefined,
+        };
+        applyStreamTransportToRefs(fallbackPlan, iceServersRef, iceStunOnlyRef, iceFullRef);
+        await startMeshView(viewKey, clientSocketId, clientId, fallbackPlan);
+      }
+    },
+    [
+      clearStreamConnectTimeout,
+      send,
+      startMeshView,
+      teardownMeshPeerForViewKey,
+      teardownSfuForViewKey,
+    ],
+  );
+
   const scheduleConnectRetry = useCallback(
     (viewKey: string, message: string) => {
       const clientId = clientIdFromViewKey(viewKey);
@@ -415,7 +633,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           if (streamTrackReceivedRef.current.has(viewKey)) return;
           failClientStream(
             viewKey,
-            "Stream timed out. Confirm the client app is online, signaling uses Cloudflare TURN, and ports 18085/13000 are open.",
+            "Stream timed out. Check the client app is online and signaling at your home server (port 18085).",
           );
         }, STREAM_CONNECT_TIMEOUT_MS),
       );
@@ -577,11 +795,10 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         prefsRef.current.delete(viewKey);
         removeFromConnectQueue(viewKey);
         const sid = clientSocketByViewKeyRef.current.get(viewKey);
-        if (sid) {
+        clientSocketByViewKeyRef.current.delete(viewKey);
+        teardownPeerForViewKey(viewKey);
+        if (sid && !hasActiveInterestForClientSocket(sid)) {
           stopViewingServer(sid);
-          teardownPeerForClientSocket(sid);
-          socketIdToViewKeyRef.current.delete(sid);
-          clientSocketByViewKeyRef.current.delete(viewKey);
         }
         setStreams((prev) => {
           if (!prev.has(viewKey)) return prev;
@@ -593,7 +810,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         interestRef.current.set(viewKey, n);
       }
     },
-    [removeFromConnectQueue, stopViewingServer, teardownPeerForClientSocket],
+    [
+      hasActiveInterestForClientSocket,
+      removeFromConnectQueue,
+      stopViewingServer,
+      teardownPeerForViewKey,
+    ],
   );
 
   const getStream = useCallback(
@@ -845,7 +1067,58 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       switch (type) {
         case "welcome": {
           if (Array.isArray(msg.iceServers) && msg.iceServers.length > 0) {
-            iceServersRef.current = msg.iceServers as RTCIceServer[];
+            iceFullRef.current = msg.iceServers as RTCIceServer[];
+          }
+          applyStreamTransportToRefs(
+            parseStreamTransport(msg),
+            iceServersRef,
+            iceStunOnlyRef,
+            iceFullRef,
+          );
+          if (!iceServersRef.current.length && iceFullRef.current.length) {
+            iceServersRef.current = iceFullRef.current;
+          }
+          break;
+        }
+        case "stream-transport-hint":
+        case "stream-transport-upgrade": {
+          applyStreamTransportToRefs(
+            parseStreamTransport(msg),
+            iceServersRef,
+            iceStunOnlyRef,
+            iceFullRef,
+          );
+          break;
+        }
+        case "sfu-api-response": {
+          handleSfuApiResponse(msg);
+          break;
+        }
+        case "sfu-publisher-ready": {
+          const cid = Number(msg.clientId);
+          const pubSid =
+            typeof msg.publisherSessionId === "string" ? msg.publisherSessionId : "";
+          if (!Number.isFinite(cid) || cid <= 0 || !pubSid) break;
+          const pubLane =
+            typeof msg.providerLane === "number" && (msg.providerLane === 1 || msg.providerLane === 2)
+              ? msg.providerLane
+              : undefined;
+          for (const [viewKey, pending] of pendingSfuByViewKeyRef.current.entries()) {
+            if (pending.clientId !== cid) continue;
+            void startSfuView(viewKey, pending.clientSocketId, cid, pending.plan, pubSid, pubLane);
+          }
+          for (const [viewKey, sid] of clientSocketByViewKeyRef.current.entries()) {
+            if (clientIdFromViewKey(viewKey) !== cid) continue;
+            if (streamTrackReceivedRef.current.has(viewKey)) continue;
+            const pending = pendingSfuByViewKeyRef.current.get(viewKey);
+            void startSfuView(
+              viewKey,
+              sid,
+              cid,
+              pending?.plan ?? null,
+              pubSid,
+              pubLane,
+            );
           }
           break;
         }
@@ -964,105 +1237,59 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
             clearConnectRetry(viewKey);
             connectCooldownByClientRef.current.delete(clientId);
             armStreamConnectTimeout(viewKey);
-            const prevSid = clientSocketByViewKeyRef.current.get(viewKey);
-            if (prevSid && prevSid !== clientSocketId) {
-              stopViewingServer(prevSid);
-              teardownPeerForClientSocket(prevSid);
-              socketIdToViewKeyRef.current.delete(prevSid);
-            }
             clientSocketByViewKeyRef.current.set(viewKey, clientSocketId);
-            socketIdToViewKeyRef.current.set(clientSocketId, viewKey);
           }
 
-          const ice = iceServersRef.current.length > 0 ? iceServersRef.current : DEFAULT_ICE;
-          teardownPeerForClientSocket(clientSocketId);
-          const pc = createAuditPeerConnection(ice);
-          pcByClientSocketRef.current.set(clientSocketId, pc);
-          iceDedupByClientSocketRef.current.set(clientSocketId, createCandidateDedupeSet());
-          pendingIceByClientSocketRef.current.set(clientSocketId, []);
+          const transportPlan = parseStreamTransport(msg);
+          applyStreamTransportToRefs(
+            transportPlan,
+            iceServersRef,
+            iceStunOnlyRef,
+            iceFullRef,
+          );
 
-          pc.addTransceiver("video", { direction: "recvonly" });
-
-          pc.ontrack = (trackEvent) => {
-            const stream = trackEvent.streams[0] ?? new MediaStream([trackEvent.track]);
-            const resolvedViewKey =
-              socketIdToViewKeyRef.current.get(clientSocketId) ??
-              (Number.isFinite(clientId) && clientId > 0 ? String(clientId) : "");
-            if (!resolvedViewKey) return;
-            streamTrackReceivedRef.current.add(resolvedViewKey);
-            clearStreamConnectTimeout(resolvedViewKey);
-            setStreams((prev) => {
-              const next = new Map(prev);
-              next.set(resolvedViewKey, stream);
-              return next;
-            });
-
-            const cid = clientIdFromViewKey(resolvedViewKey);
-            if (Number.isFinite(cid) && cid > 0) {
-              const remaining = pendingViewKeyByClientRef.current.get(cid) ?? [];
-              const nextKey = remaining.find(
-                (k) =>
-                  (interestRef.current.get(k) ?? 0) > 0 &&
-                  !clientSocketByViewKeyRef.current.has(k),
+          if (transportPlan?.mode === "sfu") {
+            const pubSid = transportPlan.sfu?.publisherSessionId?.trim();
+            if (pubSid) {
+              void startSfuView(
+                viewKey || String(clientId),
+                clientSocketId,
+                clientId,
+                transportPlan,
+                pubSid,
+                transportPlan.sfu?.providerLane,
               );
-              if (nextKey) {
-                queueMicrotask(() => connectSignalingRequestRef.current(nextKey));
-              }
+            } else {
+              await startMeshView(
+                viewKey || String(clientId),
+                clientSocketId,
+                clientId,
+                { ...transportPlan, mode: "turn-relay", sfu: undefined },
+              );
             }
-          };
-
-          pc.onconnectionstatechange = () => {
-            if (pc.connectionState !== "failed" && pc.connectionState !== "disconnected") return;
-            const vk = socketIdToViewKeyRef.current.get(clientSocketId);
-            if (!vk) return;
-            if (streamTrackReceivedRef.current.has(vk)) return;
-            failClientStream(
-              vk,
-              `WebRTC ${pc.connectionState} — check TURN (Cloudflare) on signaling server.`,
-            );
-          };
-
-          pc.onicecandidate = (iceEvent) => {
-            if (!iceEvent.candidate) return;
-            send({
-              type: "ice-candidate",
-              targetSocketId: clientSocketId,
-              candidate: iceEvent.candidate.toJSON(),
-            });
-          };
-
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            const pref = viewKey ? prefsRef.current.get(viewKey) : undefined;
-            send({
-              type: "offer",
-              targetSocketId: clientSocketId,
-              sdp: offer,
-              ...(pref?.preferredSourceId ? { preferredSourceId: pref.preferredSourceId } : {}),
-              ...(pref?.preferredSourceIndex != null ? { preferredSourceIndex: pref.preferredSourceIndex } : {}),
-            });
-          } catch (e) {
-            console.error("[audit] createOffer failed", e);
+            break;
           }
+
+          await startMeshView(
+            viewKey || String(clientId),
+            clientSocketId,
+            clientId,
+            transportPlan,
+          );
           break;
         }
         case "answer": {
           const sdp = msg.sdp as RTCSessionDescriptionInit | undefined;
-          const fromSocketId = String(msg.fromSocketId || "");
-          const pc = fromSocketId ? pcByClientSocketRef.current.get(fromSocketId) : null;
+          const vk = streamSignalingKey(msg) ?? "";
+          const pc = vk ? pcByViewKeyRef.current.get(vk) : null;
           if (pc && sdp) {
             try {
               await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-              const fromSocketId = String(msg.fromSocketId || "");
-              const queue = fromSocketId
-                ? pendingIceByClientSocketRef.current.get(fromSocketId) ?? []
-                : [];
-              if (fromSocketId) pendingIceByClientSocketRef.current.set(fromSocketId, []);
+              const queue = vk ? pendingIceByViewKeyRef.current.get(vk) ?? [] : [];
+              if (vk) pendingIceByViewKeyRef.current.set(vk, []);
               const dedupe =
-                (fromSocketId && iceDedupByClientSocketRef.current.get(fromSocketId)) ||
-                createCandidateDedupeSet();
-              if (fromSocketId) iceDedupByClientSocketRef.current.set(fromSocketId, dedupe);
+                (vk && iceDedupByViewKeyRef.current.get(vk)) || createCandidateDedupeSet();
+              if (vk) iceDedupByViewKeyRef.current.set(vk, dedupe);
               for (const c of queue) {
                 if (!c.candidate) continue;
                 await safeAddIceCandidate(pc, dedupe, {
@@ -1079,18 +1306,17 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         }
         case "ice-candidate": {
           const candidate = msg.candidate as RTCIceCandidateInit | undefined;
-          const fromSocketId = String(msg.fromSocketId || "");
-          const pc = fromSocketId ? pcByClientSocketRef.current.get(fromSocketId) : null;
-          if (!pc || !candidate?.candidate || !fromSocketId) break;
+          const vk = streamSignalingKey(msg) ?? "";
+          const pc = vk ? pcByViewKeyRef.current.get(vk) : null;
+          if (!pc || !candidate?.candidate || !vk) break;
           if (!pc.remoteDescription || !pc.localDescription) {
-            const q = pendingIceByClientSocketRef.current.get(fromSocketId) ?? [];
+            const q = pendingIceByViewKeyRef.current.get(vk) ?? [];
             q.push(candidate);
-            pendingIceByClientSocketRef.current.set(fromSocketId, q);
+            pendingIceByViewKeyRef.current.set(vk, q);
             break;
           }
-          const dedupe =
-            iceDedupByClientSocketRef.current.get(fromSocketId) ?? createCandidateDedupeSet();
-          iceDedupByClientSocketRef.current.set(fromSocketId, dedupe);
+          const dedupe = iceDedupByViewKeyRef.current.get(vk) ?? createCandidateDedupeSet();
+          iceDedupByViewKeyRef.current.set(vk, dedupe);
           await safeAddIceCandidate(pc, dedupe, {
             candidate: candidate.candidate,
             sdpMid: candidate.sdpMid ?? null,
@@ -1158,11 +1384,10 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     return () => {
       unmountedRef.current = true;
       clearReconnectTimer();
-      for (const sid of pcByClientSocketRef.current.keys()) {
-        teardownPeerForClientSocket(sid);
+      for (const viewKey of pcByViewKeyRef.current.keys()) {
+        teardownMeshPeerForViewKey(viewKey);
       }
       clientSocketByViewKeyRef.current.clear();
-      socketIdToViewKeyRef.current.clear();
       pendingViewKeyByClientRef.current.clear();
       interestRef.current.clear();
       prefsRef.current.clear();
@@ -1182,7 +1407,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     send,
     stopViewingServer,
     teardownAllViewsForClientId,
-    teardownPeerForClientSocket,
+    teardownMeshPeerForViewKey,
     popPendingViewKey,
   ]);
 
@@ -1225,5 +1450,27 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <AuditSignalingContext.Provider value={value}>{children}</AuditSignalingContext.Provider>;
+  const assignedGroupsScope = useMemo((): AssignedGroupsScope => {
+    const isTeamLead =
+      authState.status === "authenticated" && authState.user.role === "team_lead";
+    return {
+      groups: tlAccess.groups,
+      ready: !isTeamLead || tlAccess.loaded,
+      hasGroupScope: isTeamLead && tlAccess.hasGroupScope,
+    };
+  }, [
+    authState.status,
+    authState.status === "authenticated" ? authState.user.role : "",
+    tlAccess.groups,
+    tlAccess.loaded,
+    tlAccess.hasGroupScope,
+  ]);
+
+  return (
+    <AuditSignalingContext.Provider value={value}>
+      <AssignedGroupsContext.Provider value={assignedGroupsScope}>
+        {children}
+      </AssignedGroupsContext.Provider>
+    </AuditSignalingContext.Provider>
+  );
 }
