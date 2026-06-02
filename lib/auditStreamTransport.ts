@@ -1,5 +1,7 @@
 /** Parses signaling-server `streamTransport` and applies two-phase ICE (STUN → TURN). */
 
+import type { SfuSubscriberHint } from "@/lib/auditCloudflareSfu";
+
 export type StreamTransportMode = "p2p-preferred" | "turn-relay" | "sfu";
 
 export type StreamSfuHint = {
@@ -84,7 +86,7 @@ export function parseStreamTransport(msg: Record<string, unknown>): StreamTransp
 export function sfuSubscriberHint(
   plan: StreamTransportPlan | null,
   publisherSessionId?: string,
-): { trackName: string; publisherSessionId: string; stunUrl?: string } | null {
+): SfuSubscriberHint | null {
   const sfu = plan?.sfu;
   if (!sfu?.enabled || sfu.role !== "subscriber") return null;
   const trackName = sfu.trackName?.trim();
