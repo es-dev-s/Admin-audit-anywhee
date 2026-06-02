@@ -122,7 +122,13 @@ function filterMatches(filter: FilterKey, eventType: string): boolean {
     );
   if (filter === "share")
     return eventType === "access_share" || eventType === "access_revoke";
-  if (filter === "members") return eventType === "member_audit_org_updated";
+  if (filter === "members")
+    return (
+      eventType === "member_audit_org_updated" ||
+      eventType === "member_access_requested" ||
+      eventType === "member_access_approved" ||
+      eventType === "member_access_rejected"
+    );
   return true;
 }
 
@@ -144,6 +150,9 @@ function eventIcon(eventType: string) {
     case "access_revoke":
       return UserPlus;
     case "member_audit_org_updated":
+    case "member_access_requested":
+    case "member_access_approved":
+    case "member_access_rejected":
       return Users;
     default:
       return Clock;

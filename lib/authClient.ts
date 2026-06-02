@@ -226,3 +226,57 @@ export async function apiRequestTeamLeadOrgAccess(
     }),
   });
 }
+
+export type MemberAccessRequestRow = {
+  id: string;
+  auditMemberId: string;
+  memberName: string | null;
+  memberEmail: string | null;
+  shareScope: "team" | "member";
+  signalingOrgId: number;
+  signalClientId: number | null;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  message: string | null;
+  declineReason: string | null;
+  liveTeamName: string | null;
+  liveMemberName: string | null;
+  requestedAt: string;
+  reviewedAt: string | null;
+};
+
+export async function apiListMemberAccessRequests(opts?: {
+  status?: string;
+}): Promise<{ requests: MemberAccessRequestRow[]; pendingCount: number }> {
+  const q = opts?.status ? `?status=${encodeURIComponent(opts.status)}` : "";
+  return request(`/member-access-requests${q}`);
+}
+
+export async function apiCreateMemberAccessRequest(payload: {
+  shareScope: "team" | "member";
+  signalingOrgId: number;
+  signalClientId?: number | null;
+  message?: string | null;
+  liveTeamName?: string | null;
+  liveMemberName?: string | null;
+}): Promise<{ success: boolean; id: string; status: string }> {
+  return request("/member-access-requests", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function apiReviewMemberAccessRequest(payload: {
+  requestId: string;
+  action: "approve" | "reject";
+  declineReason?: string | null;
+}): Promise<{
+  success: boolean;
+  status: string;
+  message?: string;
+  autoRevokesAt?: string;
+}> {
+  return request("/member-access-requests", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}

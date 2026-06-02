@@ -6,19 +6,19 @@ import { CommandSearch } from "@/components/ui/CommandSearch";
 import { NotificationDrawer } from "@/components/ui/NotificationDrawer";
 import { ProfileMenuPanel } from "@/components/ui/ProfileMenuPanel";
 import { useOptionalAuditSignaling } from "@/context/audit-signaling-context";
-import { useAuditStore } from "@/store/auditStore";
 import { useAuth } from "@/context/auth-context";
+import { useMemberAccessPendingCount } from "@/hooks/useMemberAccessPendingCount";
 import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
 
 export function Topbar({ onOpenMobile }: { onOpenMobile: () => void }) {
   const { state: authState } = useAuth();
-  const Object_statuses = useAuditStore((state) => state.auditStatuses);
+  const isTeamLead =
+    authState.status === "authenticated" &&
+    authState.user.role === "team_lead";
+  const { pendingCount } = useMemberAccessPendingCount(isTeamLead);
 
   const auditSig = useOptionalAuditSignaling();
-  const pendingCount = Object.values(Object_statuses).filter(
-    (s) => s === "pending"
-  ).length;
 
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandNonce, setCommandNonce] = useState(0);

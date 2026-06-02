@@ -21,6 +21,7 @@ import { useUIStore } from "@/store/uiStore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "@/components/audit/StatusBadge";
+import { MemberAccessRequestPanel } from "@/components/audit/MemberAccessRequestPanel";
 
 type Filter = "all" | "active";
 
@@ -34,6 +35,9 @@ export default function AuditPage() {
 
   const isTeamLead =
     authState.status === "authenticated" && authState.user.role === "team_lead";
+  const isAuditMember =
+    authState.status === "authenticated" &&
+    authState.user.role === "audit_member";
 
   const orgStats = useMemo(() => {
     const byOrg = new Map<number, { total: number; online: number; sharing: number }>();
@@ -115,6 +119,8 @@ export default function AuditPage() {
   return (
     <AnimatedPage>
       <div className="flex w-full flex-col">
+
+        {isAuditMember ? <MemberAccessRequestPanel /> : null}
 
         {/* ── Assigned groups banner (team lead only) ── */}
         {isTeamLead && assignedGroups.length > 0 && (
@@ -349,6 +355,10 @@ export default function AuditPage() {
                     isTeamLead && teamLeadOrgAccess?.loaded
                       ? teamLeadOrgAccess.statusForOrg(org.id)
                       : null;
+                  const canShareOrg =
+                    !isTeamLead ||
+                    (teamLeadOrgAccess?.loaded === true &&
+                      teamLeadOrgAccess.approvedOrgIds.has(org.id));
 
                   return (
                     <motion.tr
@@ -432,10 +442,12 @@ export default function AuditPage() {
                           {isTeamLead ? (
                             <button
                               type="button"
-                              disabled={!teamLeadOrgAccess?.loaded || tlAccessStatus !== "approved"}
+                              disabled={!canShareOrg}
                               title={
-                                teamLeadOrgAccess?.loaded && tlAccessStatus !== "approved"
-                                  ? "Super-admin must approve access first"
+                                !canShareOrg
+                                  ? assignedGroups.length > 0
+                                    ? "This team is outside your assigned audit groups"
+                                    : "Super-admin must approve access first"
                                   : "Share access"
                               }
                               onClick={() => setShareOrg({ id: org.id, name: org.name })}

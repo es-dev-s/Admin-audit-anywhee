@@ -20,6 +20,7 @@ import { memberOrgPlainTextFromClient } from "@/lib/memberOrgDisplay";
 import { MAX_CONCURRENT_ACTIVE_STREAMS } from "@/lib/auditStreamLimits";
 import {
   getLiveFeedLayout,
+  isSideBySideLiveFeedLayout,
   LIVE_FEED_LAYOUTS,
   resizeSlotAssignments,
 } from "@/lib/liveFeedWallLayouts";
@@ -60,21 +61,27 @@ function WallEmptySlot({
   usedClientIds,
   activeStreamCount,
   onAssign,
+  sideBySide,
 }: {
   slotIndex: number;
   streamableClients: AuditLiveClient[];
   usedClientIds: Set<number>;
   activeStreamCount: number;
   onAssign: (id: number) => void;
+  sideBySide: boolean;
 }) {
+  const slotLabel = sideBySide ? (slotIndex === 0 ? "L" : "R") : String(slotIndex + 1).padStart(2, "0");
   const atLimit = activeStreamCount >= MAX_CONCURRENT_ACTIVE_STREAMS;
 
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#080808] p-3">
-      <span className="live-feed-cam-badge">
-        {String(slotIndex + 1).padStart(2, "0")}
-      </span>
+      <span className="live-feed-cam-badge">{slotLabel}</span>
       <LayoutGrid size={18} className="text-white/12" aria-hidden />
+      {sideBySide ? (
+        <span className="text-[10px] font-medium uppercase tracking-widest text-white/35">
+          {slotIndex === 0 ? "Left screen" : "Right screen"}
+        </span>
+      ) : null}
       <select
         className="w-full max-w-[220px] appearance-none rounded border border-white/10 bg-[#111] px-2.5 py-2 text-[11px] font-medium text-white/60 outline-none hover:border-white/20 focus-visible:border-[var(--color-accent)] focus-visible:ring-1 focus-visible:ring-[var(--color-accent)]"
         value=""
@@ -83,7 +90,7 @@ function WallEmptySlot({
       >
         <option value="">— assign member —</option>
         {streamableClients.map((c) => {
-          const taken   = usedClientIds.has(c.id);
+          const taken = !sideBySide && usedClientIds.has(c.id);
           const blocked = !taken && c.status === "sharing" && atLimit;
           return (
             <option key={c.id} value={String(c.id)} disabled={taken || blocked}>
@@ -106,6 +113,7 @@ function WallFilledSlot({
   usedClientIds,
   onAssign,
   onClear,
+  sideBySide,
 }: {
   client: AuditLiveClient;
   slotIndex: number;
@@ -113,28 +121,64 @@ function WallFilledSlot({
   usedClientIds: Set<number>;
   onAssign: (id: number | null) => void;
   onClear: () => void;
+  sideBySide: boolean;
 }) {
-  const { streams, acquireStream, releaseStream } = useAuditSignaling();
-  const auth    = useSignalingStreamAuth(client.orgId, client.id);
-  const [displayIdx, setDisplayIdx] = useState(0);
-  const stream  = streams.get(client.id);
+  const { getStream, acquireStream, releaseStream } = useAuditSignaling();
+  const auth = useSignalingStreamAuth(client.orgId, client.id);
   const sources = client.screenSources ?? [];
+  const pinnedDisplayIdx =
+    sideBySide && sources.length > 0
+      ? Math.min(slotIndex, sources.length - 1)
+      : 0;
+  const [displayIdx, setDisplayIdx] = useState(pinnedDisplayIdx);
+  const activeDisplayIdx = sideBySide ? pinnedDisplayIdx : displayIdx;
+  const activeSource = sources[activeDisplayIdx] ?? sources[0];
+  const streamOpts = useMemo(
+    () => ({
+      preferredSourceId: activeSource?.id ?? null,
+      preferredSourceIndex: activeDisplayIdx,
+    }),
+    [activeSource?.id, activeDisplayIdx],
+  );
+  const stream = getStream(client.id, streamOpts);
   const sharing = client.status === "sharing";
 
-  // Acquire stream when authorized + sharing; release on unmount or condition change.
+  useEffect(() => {
+    if (sideBySide) setDisplayIdx(pinnedDisplayIdx);
+  }, [sideBySide, pinnedDisplayIdx]);
+
   useEffect(() => {
     if (!sharing || auth.status !== "authorized") return;
-    acquireStream(client.id);
-    return () => releaseStream(client.id);
-  }, [client.id, sharing, auth.status, acquireStream, releaseStream]);
+    acquireStream(client.id, streamOpts);
+    return () => releaseStream(client.id, streamOpts);
+  }, [
+    client.id,
+    sharing,
+    auth.status,
+    activeSource?.id,
+    activeDisplayIdx,
+    acquireStream,
+    releaseStream,
+    streamOpts,
+  ]);
 
   const onDisplayChange = useCallback(
     (sourceId: string, idx: number) => {
+      if (sideBySide) return;
+      const prevOpts = {
+        preferredSourceId: sources[displayIdx]?.id ?? null,
+        preferredSourceIndex: displayIdx,
+      };
       setDisplayIdx(idx);
-      releaseStream(client.id);
-      queueMicrotask(() => acquireStream(client.id, { preferredSourceId: sourceId }));
+      releaseStream(client.id, prevOpts);
+      queueMicrotask(() =>
+        acquireStream(client.id, {
+          preferredSourceId: sourceId,
+          preferredSourceIndex: idx,
+        }),
+      );
     },
-    [client.id, acquireStream, releaseStream],
+    [client.id, displayIdx, sources, sideBySide, acquireStream, releaseStream],
   );
 
   const orgLabel   = (client.claimedOrgName || client.orgName || "").trim();
@@ -147,7 +191,7 @@ function WallFilledSlot({
     <div className="absolute inset-0 overflow-hidden bg-black">
       {/* Camera number */}
       <span className="live-feed-cam-badge">
-        {String(slotIndex + 1).padStart(2, "0")}
+        {sideBySide ? (slotIndex === 0 ? "L" : "R") : String(slotIndex + 1).padStart(2, "0")}
       </span>
 
       {/* Live indicator */}
@@ -193,7 +237,7 @@ function WallFilledSlot({
           fillContainer
           surveillanceTile
           screenSources={sources}
-          displayIndex={displayIdx}
+          displayIndex={activeDisplayIdx}
           onDisplayChange={onDisplayChange}
         />
       )}
@@ -217,7 +261,8 @@ function WallFilledSlot({
           }}
         >
           {streamableClients.map((c) => {
-            const taken = usedClientIds.has(c.id) && c.id !== client.id;
+            const taken =
+              !sideBySide && usedClientIds.has(c.id) && c.id !== client.id;
             return (
               <option key={c.id} value={String(c.id)} disabled={taken}>
                 {memberOrgPlainTextFromClient(c)}
@@ -225,7 +270,7 @@ function WallFilledSlot({
             );
           })}
         </select>
-        {sources.length > 1 && auth.status === "authorized" && sharing && (
+        {!sideBySide && sources.length > 1 && auth.status === "authorized" && sharing && (
           <MultiDisplaySelector sources={sources} valueIndex={displayIdx} onChange={onDisplayChange} />
         )}
         <Link
@@ -253,9 +298,9 @@ export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {
 
   // Restore persisted layout + assignments on first mount.
   const persisted = useMemo(() => readPersisted(), []);
-  const [layoutId, setLayoutId] = useState(persisted?.layoutId ?? "4");
+  const [layoutId, setLayoutId] = useState(persisted?.layoutId ?? "2");
   const [assignments, setAssignments] = useState<(number | null)[]>(() => {
-    const layout = getLiveFeedLayout(persisted?.layoutId ?? "4");
+    const layout = getLiveFeedLayout(persisted?.layoutId ?? "2");
     return resizeSlotAssignments(persisted?.assignments ?? [], layout.slots);
   });
 
@@ -289,6 +334,7 @@ export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {
   }, [layoutId, assignments]);
 
   const layout = useMemo(() => getLiveFeedLayout(layoutId), [layoutId]);
+  const sideBySide = isSideBySideLiveFeedLayout(layout);
 
   const clientById = useMemo(() => {
     const m = new Map<number, AuditLiveClient>();
@@ -332,17 +378,28 @@ export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {
     setAssignments((prev) => resizeSlotAssignments(prev, getLiveFeedLayout(id).slots));
   };
 
-  const setSlot = useCallback((slotIndex: number, clientId: number | null) => {
-    setAssignments((prev) => {
-      const next = resizeSlotAssignments(prev, layout.slots);
-      if (clientId != null) {
-        const dup = next.findIndex((id, i) => i !== slotIndex && id === clientId);
-        if (dup !== -1) next[dup] = null;
-      }
-      next[slotIndex] = clientId;
-      return next;
-    });
-  }, [layout.slots]);
+  const setSlot = useCallback(
+    (slotIndex: number, clientId: number | null) => {
+      setAssignments((prev) => {
+        const next = resizeSlotAssignments(prev, layout.slots);
+        if (clientId != null && !sideBySide) {
+          const dup = next.findIndex((id, i) => i !== slotIndex && id === clientId);
+          if (dup !== -1) next[dup] = null;
+        }
+        next[slotIndex] = clientId;
+        return next;
+      });
+    },
+    [layout.slots, sideBySide],
+  );
+
+  const assignDualMonitors = useCallback(
+    (clientId: number) => {
+      if (!sideBySide) return;
+      setAssignments([clientId, clientId]);
+    },
+    [sideBySide],
+  );
 
   const clearAll = () => setAssignments(resizeSlotAssignments([], layout.slots));
 
@@ -377,6 +434,32 @@ export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {
           )}
         </span>
       </div>
+
+      {sideBySide ? (
+        <select
+          className={cn(
+            "max-w-[240px] rounded border px-2 py-1.5 text-[11px] font-medium outline-none",
+            isFs
+              ? "border-white/12 bg-black/60 text-white/80"
+              : "border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)]",
+          )}
+          value=""
+          onChange={(e) => {
+            const id = Number(e.target.value);
+            if (Number.isFinite(id) && id > 0) assignDualMonitors(id);
+          }}
+          aria-label="Assign one member to left and right screens"
+        >
+          <option value="">Both monitors — pick member</option>
+          {streamableClients
+            .filter((c) => (c.screenSources?.length ?? 0) >= 2 && c.status === "sharing")
+            .map((c) => (
+              <option key={c.id} value={String(c.id)}>
+                {memberOrgPlainTextFromClient(c)} · {c.screenSources.length} displays
+              </option>
+            ))}
+        </select>
+      ) : null}
 
       {/* Layout pills */}
       <div className="flex flex-1 flex-wrap justify-center gap-1.5" role="group" aria-label="Number of cameras">
@@ -471,14 +554,18 @@ export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {
       */}
       <motion.div
         layout
-        className={cn("live-feed-grid min-h-0", !isFs && "flex-1")}
+        className={cn(
+          "live-feed-grid min-h-0",
+          sideBySide && "live-feed-grid--lr",
+          !isFs && "flex-1",
+        )}
         style={{
           gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
           // Guarantee each row has at least 180px of height in normal mode.
           // This ensures the flex chain produces a visible grid even when
           // an ancestor has no explicit height.
-          minHeight: isFs ? undefined : `${layout.rows * 180}px`,
+          minHeight: isFs ? undefined : `${layout.rows * (sideBySide ? 280 : 180)}px`,
         }}
         transition={{ layout: { duration: 0.4, ease: [0.32, 0.72, 0, 1] } }}
       >
@@ -514,10 +601,12 @@ export function LiveFeedWall({ clients }: { clients: AuditLiveClient[] }) {
                   usedClientIds={usedClientIds}
                   activeStreamCount={activeStreamCount}
                   onAssign={(id) => setSlot(i, id)}
+                  sideBySide={sideBySide}
                 />
               ) : (
                 <WallFilledSlot
                   client={client}
+                  sideBySide={sideBySide}
                   slotIndex={i}
                   streamableClients={streamableClients}
                   usedClientIds={usedClientIds}

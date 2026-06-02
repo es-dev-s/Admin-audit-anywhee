@@ -33,6 +33,19 @@
     grid-template-rows    0.4s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
+/* Side-by-side dual monitor wall: equal 50/50 columns, taller cells */
+.live-feed-grid--lr {
+  gap: 2px;
+}
+
+.live-feed-wall-root.is-fullscreen .live-feed-grid--lr .live-feed-slot-cell {
+  min-height: 0;
+}
+
+.live-feed-grid--lr .live-feed-slot-cell video {
+  object-fit: contain;
+}
+
 .live-feed-slot-cell {
   min-width: 0;
   min-height: 0;

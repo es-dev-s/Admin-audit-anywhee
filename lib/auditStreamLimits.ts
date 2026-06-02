@@ -23,7 +23,7 @@ export const STREAM_CONNECT_STAGGER_MS = parsePositive(
   400,
 );
 
-export function countActiveStreamInterests(interest: Map<number, number>): number {
+export function countActiveStreamInterests(interest: Map<string, number>): number {
   let n = 0;
   for (const v of interest.values()) {
     if (v > 0) n += 1;

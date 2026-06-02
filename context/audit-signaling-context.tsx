@@ -33,6 +33,11 @@ import {
   MAX_PARALLEL_STREAM_CONNECTS,
   STREAM_CONNECT_STAGGER_MS,
 } from "@/lib/auditStreamLimits";
+import {
+  auditStreamViewKey,
+  clientIdFromViewKey,
+  type AuditStreamViewOptions,
+} from "@/lib/auditStreamViewKey";
 
 const DEFAULT_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 const STREAM_CONNECT_TIMEOUT_MS = 45_000;
@@ -128,13 +133,17 @@ export type AuditSignalingContextValue = {
   homeOrgName: string | null;
   orgs: AuditOrg[];
   clients: AuditLiveClient[];
-  streams: Map<number, MediaStream>;
+  streams: Map<string, MediaStream>;
+  getStream: (
+    clientId: number,
+    opts?: AuditStreamViewOptions
+  ) => MediaStream | undefined;
   /** Latest browser/extension tab snapshot per enrolled client (from `browser-tab-events-update`). */
   browserTabAnalyticsByClientId: Map<number, BrowserTabAnalyticsSnapshot>;
   getBrowserTabAnalytics: (clientId: number) => BrowserTabAnalyticsSnapshot | undefined;
   /** Ref-counted: increment when a surface needs a live stream; decrements on release. */
-  acquireStream: (clientId: number, opts?: { preferredSourceId?: string | null; preferredSourceIndex?: number | null }) => void;
-  releaseStream: (clientId: number) => void;
+  acquireStream: (clientId: number, opts?: AuditStreamViewOptions) => void;
+  releaseStream: (clientId: number, opts?: AuditStreamViewOptions) => void;
   getClient: (clientId: number) => AuditLiveClient | undefined;
   /** Ask the viewed member’s desktop app to show and focus (requires active stream session). */
   requestClientAppFocus: (clientId: number) => void;
@@ -227,14 +236,16 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const [signalingSessionToken, setSignalingSessionToken] = useState<string | null>(null);
   const iceServersRef = useRef<RTCIceServer[]>([]);
   const pcByClientSocketRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const clientSocketByClientIdRef = useRef<Map<number, string>>(new Map());
-  const interestRef = useRef<Map<number, number>>(new Map());
-  const prefsRef = useRef<Map<number, { preferredSourceId?: string | null; preferredSourceIndex?: number | null }>>(new Map());
-  const streamTimeoutByClientRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-  const streamTrackReceivedRef = useRef<Set<number>>(new Set());
-  const connectRetryCountRef = useRef<Map<number, number>>(new Map());
-  const connectRetryTimerRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-  const connectQueueRef = useRef<number[]>([]);
+  const clientSocketByViewKeyRef = useRef<Map<string, string>>(new Map());
+  const socketIdToViewKeyRef = useRef<Map<string, string>>(new Map());
+  const pendingViewKeyByClientRef = useRef<Map<number, string[]>>(new Map());
+  const interestRef = useRef<Map<string, number>>(new Map());
+  const prefsRef = useRef<Map<string, AuditStreamViewOptions>>(new Map());
+  const streamTimeoutByViewKeyRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const streamTrackReceivedRef = useRef<Set<string>>(new Set());
+  const connectRetryCountRef = useRef<Map<string, number>>(new Map());
+  const connectRetryTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const connectQueueRef = useRef<string[]>([]);
   const connectQueueScheduledRef = useRef(false);
   const connectInFlightRef = useRef(0);
   const iceDedupByClientSocketRef = useRef<Map<string, Set<string>>>(new Map());
@@ -249,7 +260,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const [homeOrgName, setHomeOrgName] = useState<string | null>(null);
   const [orgs, setOrgs] = useState<AuditOrg[]>([]);
   const [clients, setClients] = useState<AuditLiveClient[]>([]);
-  const [streams, setStreams] = useState<Map<number, MediaStream>>(new Map());
+  const [streams, setStreams] = useState<Map<string, MediaStream>>(new Map());
   const [browserTabAnalyticsByClientId, setBrowserTabAnalyticsByClientId] = useState<
     Map<number, BrowserTabAnalyticsSnapshot>
   >(() => new Map());
@@ -274,73 +285,104 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     pendingIceByClientSocketRef.current.delete(clientSocketId);
   }, []);
 
-  const removeFromConnectQueue = useCallback((clientId: number) => {
-    connectQueueRef.current = connectQueueRef.current.filter((id) => id !== clientId);
+  const removeFromConnectQueue = useCallback((viewKey: string) => {
+    connectQueueRef.current = connectQueueRef.current.filter((k) => k !== viewKey);
   }, []);
 
-  const enqueueConnect = useCallback((clientId: number) => {
+  const enqueueConnect = useCallback((viewKey: string) => {
+    const clientId = clientIdFromViewKey(viewKey);
     if (!Number.isFinite(clientId) || clientId <= 0) return;
     const q = connectQueueRef.current;
-    if (!q.includes(clientId)) q.push(clientId);
+    if (!q.includes(viewKey)) q.push(viewKey);
   }, []);
 
-  const clearStreamConnectTimeout = useCallback((clientId: number) => {
-    const t = streamTimeoutByClientRef.current.get(clientId);
+  const clearStreamConnectTimeout = useCallback((viewKey: string) => {
+    const t = streamTimeoutByViewKeyRef.current.get(viewKey);
     if (t) {
       clearTimeout(t);
-      streamTimeoutByClientRef.current.delete(clientId);
+      streamTimeoutByViewKeyRef.current.delete(viewKey);
     }
   }, []);
 
-  const teardownPeerForClientId = useCallback(
-    (clientId: number) => {
-      clearStreamConnectTimeout(clientId);
-      streamTrackReceivedRef.current.delete(clientId);
-      const sid = clientSocketByClientIdRef.current.get(clientId);
+  const teardownPeerForViewKey = useCallback(
+    (viewKey: string) => {
+      clearStreamConnectTimeout(viewKey);
+      streamTrackReceivedRef.current.delete(viewKey);
+      const sid = clientSocketByViewKeyRef.current.get(viewKey);
       if (sid) {
+        socketIdToViewKeyRef.current.delete(sid);
         teardownPeerForClientSocket(sid);
-        clientSocketByClientIdRef.current.delete(clientId);
+        clientSocketByViewKeyRef.current.delete(viewKey);
       }
       setStreams((prev) => {
-        if (!prev.has(clientId)) return prev;
+        if (!prev.has(viewKey)) return prev;
         const next = new Map(prev);
-        next.delete(clientId);
+        next.delete(viewKey);
         return next;
       });
     },
     [clearStreamConnectTimeout, teardownPeerForClientSocket],
   );
 
-  const clearConnectRetry = useCallback((clientId: number) => {
-    connectRetryCountRef.current.delete(clientId);
-    const t = connectRetryTimerRef.current.get(clientId);
+  const teardownAllViewsForClientId = useCallback(
+    (clientId: number) => {
+      for (const viewKey of [...clientSocketByViewKeyRef.current.keys()]) {
+        if (clientIdFromViewKey(viewKey) === clientId) {
+          teardownPeerForViewKey(viewKey);
+        }
+      }
+      for (const viewKey of [...interestRef.current.keys()]) {
+        if (clientIdFromViewKey(viewKey) === clientId) {
+          interestRef.current.delete(viewKey);
+          prefsRef.current.delete(viewKey);
+        }
+      }
+      pendingViewKeyByClientRef.current.delete(clientId);
+    },
+    [teardownPeerForViewKey],
+  );
+
+  const clearConnectRetry = useCallback((viewKey: string) => {
+    connectRetryCountRef.current.delete(viewKey);
+    const t = connectRetryTimerRef.current.get(viewKey);
     if (t) {
       clearTimeout(t);
-      connectRetryTimerRef.current.delete(clientId);
+      connectRetryTimerRef.current.delete(viewKey);
     }
   }, []);
 
+  const popPendingViewKey = useCallback((clientId: number): string | null => {
+    const q = pendingViewKeyByClientRef.current.get(clientId);
+    if (!q?.length) return null;
+    const viewKey = q.pop()!;
+    if (!q.length) pendingViewKeyByClientRef.current.delete(clientId);
+    else pendingViewKeyByClientRef.current.set(clientId, q);
+    return viewKey;
+  }, []);
+
   const failClientStream = useCallback(
-    (clientId: number, message: string) => {
+    (viewKey: string, message: string) => {
+      const clientId = clientIdFromViewKey(viewKey);
       if (!Number.isFinite(clientId) || clientId <= 0) return;
-      clearConnectRetry(clientId);
-      interestRef.current.delete(clientId);
+      clearConnectRetry(viewKey);
+      interestRef.current.delete(viewKey);
       connectCooldownByClientRef.current.delete(clientId);
-      teardownPeerForClientId(clientId);
+      teardownPeerForViewKey(viewKey);
       showToastRef.current(message, "error");
     },
-    [clearConnectRetry, teardownPeerForClientId],
+    [clearConnectRetry, teardownPeerForViewKey],
   );
 
   const scheduleConnectRetry = useCallback(
-    (clientId: number, message: string) => {
+    (viewKey: string, message: string) => {
+      const clientId = clientIdFromViewKey(viewKey);
       if (!Number.isFinite(clientId) || clientId <= 0) return;
-      if ((interestRef.current.get(clientId) ?? 0) <= 0) return;
+      if ((interestRef.current.get(viewKey) ?? 0) <= 0) return;
 
-      const attempt = (connectRetryCountRef.current.get(clientId) ?? 0) + 1;
-      connectRetryCountRef.current.set(clientId, attempt);
+      const attempt = (connectRetryCountRef.current.get(viewKey) ?? 0) + 1;
+      connectRetryCountRef.current.set(viewKey, attempt);
       if (attempt > 6) {
-        failClientStream(clientId, message);
+        failClientStream(viewKey, message);
         return;
       }
 
@@ -348,14 +390,14 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         showToastRef.current("Waiting for client on signaling — retrying…", "error");
       }
 
-      const prev = connectRetryTimerRef.current.get(clientId);
+      const prev = connectRetryTimerRef.current.get(viewKey);
       if (prev) clearTimeout(prev);
       connectRetryTimerRef.current.set(
-        clientId,
+        viewKey,
         setTimeout(() => {
-          connectRetryTimerRef.current.delete(clientId);
+          connectRetryTimerRef.current.delete(viewKey);
           connectCooldownByClientRef.current.delete(clientId);
-          connectSignalingRequestRef.current(clientId);
+          connectSignalingRequestRef.current(viewKey);
         }, 2000),
       );
     },
@@ -363,16 +405,16 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   );
 
   const armStreamConnectTimeout = useCallback(
-    (clientId: number) => {
-      if (!Number.isFinite(clientId) || clientId <= 0) return;
-      clearStreamConnectTimeout(clientId);
-      streamTimeoutByClientRef.current.set(
-        clientId,
+    (viewKey: string) => {
+      if (!viewKey) return;
+      clearStreamConnectTimeout(viewKey);
+      streamTimeoutByViewKeyRef.current.set(
+        viewKey,
         setTimeout(() => {
-          streamTimeoutByClientRef.current.delete(clientId);
-          if (streamTrackReceivedRef.current.has(clientId)) return;
+          streamTimeoutByViewKeyRef.current.delete(viewKey);
+          if (streamTrackReceivedRef.current.has(viewKey)) return;
           failClientStream(
-            clientId,
+            viewKey,
             "Stream timed out. Confirm the client app is online, signaling uses Cloudflare TURN, and ports 18085/13000 are open.",
           );
         }, STREAM_CONNECT_TIMEOUT_MS),
@@ -391,7 +433,9 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   );
 
   const connectSignalingRequestImmediate = useCallback(
-    (clientId: number) => {
+    (viewKey: string) => {
+      const clientId = clientIdFromViewKey(viewKey);
+      if (!Number.isFinite(clientId) || clientId <= 0) return false;
       const now = Date.now();
       const last = connectCooldownByClientRef.current.get(clientId) ?? 0;
       if (now - last < CONNECT_COOLDOWN_MS) return false;
@@ -407,6 +451,9 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         );
         return false;
       }
+      const pending = pendingViewKeyByClientRef.current.get(clientId) ?? [];
+      pending.push(viewKey);
+      pendingViewKeyByClientRef.current.set(clientId, pending);
       send({ type: "connect-to-client", token, clientId });
       return true;
     },
@@ -421,15 +468,16 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         connectInFlightRef.current < MAX_PARALLEL_STREAM_CONNECTS &&
         connectQueueRef.current.length > 0
       ) {
-        const clientId = connectQueueRef.current.shift();
-        if (clientId == null) break;
-        if ((interestRef.current.get(clientId) ?? 0) <= 0) continue;
+        const viewKey = connectQueueRef.current.shift();
+        if (viewKey == null) break;
+        if ((interestRef.current.get(viewKey) ?? 0) <= 0) continue;
         connectInFlightRef.current += 1;
-        const started = connectSignalingRequestImmediate(clientId);
+        const started = connectSignalingRequestImmediate(viewKey);
         if (!started) {
           connectInFlightRef.current = Math.max(0, connectInFlightRef.current - 1);
-          if ((interestRef.current.get(clientId) ?? 0) > 0) {
-            connectQueueRef.current.unshift(clientId);
+          popPendingViewKey(clientIdFromViewKey(viewKey));
+          if ((interestRef.current.get(viewKey) ?? 0) > 0) {
+            connectQueueRef.current.unshift(viewKey);
           }
         }
         if (connectQueueRef.current.length > 0 || connectInFlightRef.current > 0) {
@@ -445,11 +493,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     };
     connectQueueScheduledRef.current = true;
     queueMicrotask(run);
-  }, [connectSignalingRequestImmediate]);
+  }, [connectSignalingRequestImmediate, popPendingViewKey]);
 
   const connectSignalingRequest = useCallback(
-    (clientId: number) => {
-      enqueueConnect(clientId);
+    (viewKey: string) => {
+      enqueueConnect(viewKey);
       pumpConnectQueue();
     },
     [enqueueConnect, pumpConnectQueue],
@@ -476,8 +524,8 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
 
   const flushPendingConnects = useCallback(() => {
     connectCooldownByClientRef.current.clear();
-    for (const [clientId, n] of interestRef.current) {
-      if (n > 0) enqueueConnect(clientId);
+    for (const [viewKey, n] of interestRef.current) {
+      if (n > 0) enqueueConnect(viewKey);
     }
     pumpConnectQueue();
   }, [enqueueConnect, pumpConnectQueue]);
@@ -495,13 +543,14 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const acquireStream = useCallback(
-    (clientId: number, opts?: { preferredSourceId?: string | null; preferredSourceIndex?: number | null }) => {
+    (clientId: number, opts?: AuditStreamViewOptions) => {
       if (!Number.isFinite(clientId) || clientId <= 0) return;
-      prefsRef.current.set(clientId, {
+      const viewKey = auditStreamViewKey(clientId, opts);
+      prefsRef.current.set(viewKey, {
         preferredSourceId: opts?.preferredSourceId ?? null,
         preferredSourceIndex: opts?.preferredSourceIndex ?? null,
       });
-      const prev = interestRef.current.get(clientId) ?? 0;
+      const prev = interestRef.current.get(viewKey) ?? 0;
       if (prev === 0) {
         const active = countActiveStreamInterests(interestRef.current);
         if (active >= MAX_CONCURRENT_ACTIVE_STREAMS) {
@@ -512,38 +561,47 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           return;
         }
       }
-      interestRef.current.set(clientId, prev + 1);
+      interestRef.current.set(viewKey, prev + 1);
       if (prev === 0) {
-        connectSignalingRequest(clientId);
+        connectSignalingRequest(viewKey);
       }
     },
     [connectSignalingRequest],
   );
 
   const releaseStream = useCallback(
-    (clientId: number) => {
-      const n = (interestRef.current.get(clientId) ?? 0) - 1;
+    (clientId: number, opts?: AuditStreamViewOptions) => {
+      const viewKey = auditStreamViewKey(clientId, opts);
+      const n = (interestRef.current.get(viewKey) ?? 0) - 1;
       if (n <= 0) {
-        interestRef.current.delete(clientId);
-        prefsRef.current.delete(clientId);
-        removeFromConnectQueue(clientId);
-        const sid = clientSocketByClientIdRef.current.get(clientId);
+        interestRef.current.delete(viewKey);
+        prefsRef.current.delete(viewKey);
+        removeFromConnectQueue(viewKey);
+        const sid = clientSocketByViewKeyRef.current.get(viewKey);
         if (sid) {
           stopViewingServer(sid);
           teardownPeerForClientSocket(sid);
-          clientSocketByClientIdRef.current.delete(clientId);
+          socketIdToViewKeyRef.current.delete(sid);
+          clientSocketByViewKeyRef.current.delete(viewKey);
         }
         setStreams((prev) => {
-          if (!prev.has(clientId)) return prev;
+          if (!prev.has(viewKey)) return prev;
           const next = new Map(prev);
-          next.delete(clientId);
+          next.delete(viewKey);
           return next;
         });
       } else {
-        interestRef.current.set(clientId, n);
+        interestRef.current.set(viewKey, n);
       }
     },
     [removeFromConnectQueue, stopViewingServer, teardownPeerForClientSocket],
+  );
+
+  const getStream = useCallback(
+    (clientId: number, opts?: AuditStreamViewOptions) => {
+      return streams.get(auditStreamViewKey(clientId, opts));
+    },
+    [streams],
   );
 
   const emptyScope = useMemo<MergedAccessGrant>(
@@ -570,26 +628,28 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         const approved = new Set<number>();
         const byOrg = new Map<number, Exclude<TeamLeadOrgAccessStatus, "none">>();
 
-        if (scopeOk && Array.isArray(scopeJ.signalOrgIds) && scopeJ.signalOrgIds.length > 0) {
-          // Has admin-assigned groups: build approved set from group org ids.
-          for (const oid of scopeJ.signalOrgIds as number[]) {
+        const scopeGroups = Array.isArray(scopeJ.groups)
+          ? (scopeJ.groups as Array<{ id: string; name: string; description: string | null; signalClientIds: number[] }>)
+          : [];
+        const allowedClientIds: number[] = Array.isArray(scopeJ.signalClientIds)
+          ? (scopeJ.signalClientIds as number[])
+          : [];
+        const hasAssignedGroups =
+          scopeOk && (scopeGroups.length > 0 || allowedClientIds.length > 0);
+
+        if (hasAssignedGroups) {
+          for (const oid of (scopeJ.signalOrgIds ?? []) as number[]) {
             if (Number.isFinite(oid) && oid > 0) {
               approved.add(oid);
               byOrg.set(oid, "approved");
             }
           }
-          // Also store the allowed client ids for use in filtering.
-          const allowedClientIds: number[] = Array.isArray(scopeJ.signalClientIds)
-            ? (scopeJ.signalClientIds as number[])
-            : [];
           setTlAccess({
             loaded: true,
             byOrg,
             approved,
             allowedClientIds: new Set(allowedClientIds),
-            groups: Array.isArray(scopeJ.groups)
-              ? (scopeJ.groups as Array<{ id: string; name: string; description: string | null; signalClientIds: number[] }>)
-              : [],
+            groups: scopeGroups,
             hasGroupScope: true,
           });
           return;
@@ -849,7 +909,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         case "client-disconnected": {
           const cid = Number(msg.clientId);
           if (Number.isFinite(cid) && cid > 0) {
-            teardownPeerForClientId(cid);
+            teardownAllViewsForClientId(cid);
           }
           break;
         }
@@ -871,16 +931,13 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
               const retryable =
                 !limitHit &&
                 /connection not found|client unavailable|not available/i.test(text);
-              if (retryable) scheduleConnectRetry(clientId, text);
-              else failClientStream(clientId, text);
+              const viewKey = popPendingViewKey(clientId) ?? String(clientId);
+              if (retryable) scheduleConnectRetry(viewKey, text);
+              else failClientStream(viewKey, text);
             } else {
               showToastRef.current(text, "error");
             }
             break;
-          }
-          if (Number.isFinite(clientId) && clientId > 0) {
-            clearConnectRetry(clientId);
-            armStreamConnectTimeout(clientId);
           }
           break;
         }
@@ -889,16 +946,25 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           const clientId = Number(msg.clientId);
           if (!clientSocketId) break;
 
+          let viewKey = Number.isFinite(clientId) && clientId > 0 ? String(clientId) : "";
           if (Number.isFinite(clientId) && clientId > 0) {
-            clearConnectRetry(clientId);
+            const pending = pendingViewKeyByClientRef.current.get(clientId);
+            if (pending?.length) {
+              viewKey = pending.shift()!;
+              if (!pending.length) pendingViewKeyByClientRef.current.delete(clientId);
+              else pendingViewKeyByClientRef.current.set(clientId, pending);
+            }
+            clearConnectRetry(viewKey);
             connectCooldownByClientRef.current.delete(clientId);
-            armStreamConnectTimeout(clientId);
-            const prevSid = clientSocketByClientIdRef.current.get(clientId);
+            armStreamConnectTimeout(viewKey);
+            const prevSid = clientSocketByViewKeyRef.current.get(viewKey);
             if (prevSid && prevSid !== clientSocketId) {
               stopViewingServer(prevSid);
               teardownPeerForClientSocket(prevSid);
+              socketIdToViewKeyRef.current.delete(prevSid);
             }
-            clientSocketByClientIdRef.current.set(clientId, clientSocketId);
+            clientSocketByViewKeyRef.current.set(viewKey, clientSocketId);
+            socketIdToViewKeyRef.current.set(clientSocketId, viewKey);
           }
 
           const ice = iceServersRef.current.length > 0 ? iceServersRef.current : DEFAULT_ICE;
@@ -912,22 +978,28 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
 
           pc.ontrack = (trackEvent) => {
             const stream = trackEvent.streams[0] ?? new MediaStream([trackEvent.track]);
-            const resolvedId = Number.isFinite(clientId) && clientId > 0 ? clientId : null;
-            if (resolvedId == null) return;
-            streamTrackReceivedRef.current.add(resolvedId);
-            clearStreamConnectTimeout(resolvedId);
+            const resolvedViewKey =
+              socketIdToViewKeyRef.current.get(clientSocketId) ??
+              (Number.isFinite(clientId) && clientId > 0 ? String(clientId) : "");
+            if (!resolvedViewKey) return;
+            streamTrackReceivedRef.current.add(resolvedViewKey);
+            clearStreamConnectTimeout(resolvedViewKey);
             setStreams((prev) => {
               const next = new Map(prev);
-              next.set(resolvedId, stream);
+              next.set(resolvedViewKey, stream);
               return next;
             });
           };
 
           pc.onconnectionstatechange = () => {
             if (pc.connectionState !== "failed" && pc.connectionState !== "disconnected") return;
-            if (!Number.isFinite(clientId) || clientId <= 0) return;
-            if (streamTrackReceivedRef.current.has(clientId)) return;
-            failClientStream(clientId, `WebRTC ${pc.connectionState} — check TURN (Cloudflare) on signaling server.`);
+            const vk = socketIdToViewKeyRef.current.get(clientSocketId);
+            if (!vk) return;
+            if (streamTrackReceivedRef.current.has(vk)) return;
+            failClientStream(
+              vk,
+              `WebRTC ${pc.connectionState} — check TURN (Cloudflare) on signaling server.`,
+            );
           };
 
           pc.onicecandidate = (iceEvent) => {
@@ -942,8 +1014,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            const pref =
-              Number.isFinite(clientId) && clientId > 0 ? prefsRef.current.get(clientId) : undefined;
+            const pref = viewKey ? prefsRef.current.get(viewKey) : undefined;
             send({
               type: "offer",
               targetSocketId: clientSocketId,
@@ -1070,7 +1141,9 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       for (const sid of pcByClientSocketRef.current.keys()) {
         teardownPeerForClientSocket(sid);
       }
-      clientSocketByClientIdRef.current.clear();
+      clientSocketByViewKeyRef.current.clear();
+      socketIdToViewKeyRef.current.clear();
+      pendingViewKeyByClientRef.current.clear();
       interestRef.current.clear();
       prefsRef.current.clear();
       sessionTokenRef.current = null;
@@ -1088,8 +1161,9 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     pumpConnectQueue,
     send,
     stopViewingServer,
-    teardownPeerForClientId,
+    teardownAllViewsForClientId,
     teardownPeerForClientSocket,
+    popPendingViewKey,
   ]);
 
   const value = useMemo<AuditSignalingContextValue>(
@@ -1100,6 +1174,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       orgs: visibleOrgs,
       clients: visibleClients,
       streams,
+      getStream,
       browserTabAnalyticsByClientId,
       getBrowserTabAnalytics,
       acquireStream,
@@ -1118,6 +1193,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       connectionStatus,
       getBrowserTabAnalytics,
       getClient,
+      getStream,
       homeOrgName,
       visibleOrgs,
       releaseStream,

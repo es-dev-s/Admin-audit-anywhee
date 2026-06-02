@@ -15,9 +15,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   KeyRound,
+  ClipboardCheck,
 } from "lucide-react";
-import { useAuditStore } from "@/store/auditStore";
 import { useRecentStore } from "@/store/recentStore";
+import { useMemberAccessPendingCount } from "@/hooks/useMemberAccessPendingCount";
 import { useAuth } from "@/context/auth-context";
 import { useState } from "react";
 
@@ -54,12 +55,9 @@ export function Sidebar({
 }: SidebarProps) {
   const pathname = usePathname();
   const { state: authState, logout } = useAuth();
-  const pendingCount = useAuditStore(
-    (s) => Object.values(s.auditStatuses).filter((x) => x === "pending").length
-  );
-
   const isTeamLead =
     authState.status === "authenticated" && authState.user.role === "team_lead";
+  const { pendingCount } = useMemberAccessPendingCount(isTeamLead);
   const user = authState.status === "authenticated" ? authState.user : null;
 
   const [overviewOpen, setOverviewOpen] = useState(true);
@@ -239,6 +237,20 @@ export function Sidebar({
                           className={`whitespace-nowrap transition-all duration-300 ${collapseTextClass}`}
                         >
                           Members
+                        </span>
+                      </Link>
+                      <Link
+                        href="/team-lead"
+                        onClick={() => onClose()}
+                        className={`${navBase} ${navPad} ${isRouteActive(pathname, "/team-lead") ? navActive : navIdle}`}
+                        title="Member requests"
+                      >
+                        <ClipboardCheck size={15} strokeWidth={2.5} className="shrink-0" />
+                        <span
+                          className={`whitespace-nowrap transition-all duration-300 ${collapseTextClass}`}
+                        >
+                          Approvals
+                          {pendingCount > 0 ? ` (${pendingCount})` : ""}
                         </span>
                       </Link>
                       <Link

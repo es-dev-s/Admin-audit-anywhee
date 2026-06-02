@@ -63,12 +63,16 @@ function StreamSidePanel({
   onClose: () => void;
 }) {
   const streamAuth = useSignalingStreamAuth(orgId, clientId);
-  const { getClient, streams, acquireStream, releaseStream, orgs } =
+  const { getClient, getStream, acquireStream, releaseStream, orgs } =
     useAuditSignaling();
   const [displayIdx, setDisplayIdx] = useState(0);
 
   const client = getClient(clientId);
-  const stream = streams.get(clientId);
+  const sources = client?.screenSources ?? [];
+  const stream = getStream(clientId, {
+    preferredSourceId: sources[displayIdx]?.id ?? null,
+    preferredSourceIndex: displayIdx,
+  });
 
   const orgName = useMemo(() => {
     if (!Number.isFinite(orgId)) return null;
@@ -159,9 +163,17 @@ function StreamSidePanel({
   const title = client.fullName;
 
   const onDisplayChange = (sourceId: string, idx: number) => {
+    releaseStream(clientId, {
+      preferredSourceId: sources[displayIdx]?.id ?? null,
+      preferredSourceIndex: displayIdx,
+    });
     setDisplayIdx(idx);
-    releaseStream(clientId);
-    queueMicrotask(() => acquireStream(clientId, { preferredSourceId: sourceId }));
+    queueMicrotask(() =>
+      acquireStream(clientId, {
+        preferredSourceId: sourceId,
+        preferredSourceIndex: idx,
+      }),
+    );
   };
 
   return (
@@ -223,6 +235,7 @@ export default function TeamMembersPage() {
     orgs,
     clients,
     teamLeadOrgAccess,
+    assignedGroups,
     getBrowserTabAnalytics,
     connectionStatus,
     signalingSessionToken,
@@ -249,7 +262,10 @@ export default function TeamMembersPage() {
     isTeamLead && teamLeadOrgAccess?.loaded
       ? teamLeadOrgAccess.statusForOrg(orgId)
       : "none";
-  const canOperateTeam = !isTeamLead || tlAccessStatus === "approved";
+  const canOperateTeam =
+    !isTeamLead ||
+    (teamLeadOrgAccess?.loaded &&
+      teamLeadOrgAccess.approvedOrgIds.has(orgId)) === true;
 
   useEffect(() => {
     if (!isTeamLead || !Number.isFinite(orgId) || orgId <= 0 || !canOperateTeam) {
@@ -441,23 +457,28 @@ export default function TeamMembersPage() {
         {isTeamLead && teamLeadOrgAccess?.loaded && !canOperateTeam ? (
           <div className="mb-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-5 py-4 shadow-[var(--shadow-card)]">
             <p className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
-              Super-admin approval required
+              {assignedGroups.length > 0
+                ? "Team outside your audit groups"
+                : "Super-admin approval required"}
             </p>
             <p className="mt-1.5 text-sm leading-relaxed text-[var(--text-secondary)]">
-              {tlAccessStatus === "pending"
-                ? "Your request is pending. Access will be granted once approved."
-                : tlAccessStatus === "rejected"
-                  ? "Your request was rejected. You can submit a new request below."
-                  : tlAccessStatus === "revoked"
-                    ? "Access was revoked. Submit a new request if needed."
-                    : "Request access so a super-admin can approve viewing this team’s data."}
+              {assignedGroups.length > 0
+                ? "This team is not in your admin-assigned audit groups. Ask your admin to add the client or team to your group."
+                : tlAccessStatus === "pending"
+                  ? "Your request is pending. Access will be granted once approved."
+                  : tlAccessStatus === "rejected"
+                    ? "Your request was rejected. You can submit a new request below."
+                    : tlAccessStatus === "revoked"
+                      ? "Access was revoked. Submit a new request if needed."
+                      : "Request access so a super-admin can approve viewing this team’s data."}
             </p>
             {requestErr ? (
               <p className="mt-2 text-sm text-[var(--red)]">{requestErr}</p>
             ) : null}
-            {tlAccessStatus === "none" ||
-            tlAccessStatus === "rejected" ||
-            tlAccessStatus === "revoked" ? (
+            {assignedGroups.length === 0 &&
+            (tlAccessStatus === "none" ||
+              tlAccessStatus === "rejected" ||
+              tlAccessStatus === "revoked") ? (
               <button
                 type="button"
                 disabled={requestBusy}

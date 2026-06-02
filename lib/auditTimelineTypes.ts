@@ -7,6 +7,10 @@ export const AUDIT_TIMELINE_EVENT_TYPES = [
   "org_access_rejected",
   "org_access_revoked",
   "access_share",
+  "access_revoke",
+  "member_access_requested",
+  "member_access_approved",
+  "member_access_rejected",
   "member_audit_org_updated",
 ] as const;
 

@@ -21,10 +21,14 @@ function MemberLiveBody({
   const [displayIdx, setDisplayIdx] = useState(0);
   const [activityOpen, setActivityOpen] = useState(false);
   const streamAuth = useSignalingStreamAuth(orgId, clientId);
-  const { getClient, streams, acquireStream, releaseStream, orgs } = useAuditSignaling();
+  const { getClient, getStream, acquireStream, releaseStream, orgs } = useAuditSignaling();
 
   const client = getClient(clientId);
-  const stream = streams.get(clientId);
+  const sources = client?.screenSources ?? [];
+  const stream = getStream(clientId, {
+    preferredSourceId: sources[displayIdx]?.id ?? null,
+    preferredSourceIndex: displayIdx,
+  });
 
   const orgName = useMemo(() => {
     if (!Number.isFinite(orgId)) return null;
@@ -50,9 +54,17 @@ function MemberLiveBody({
 
   const onDisplayChange = (sourceId: string, idx: number) => {
     if (streamAuth.status !== "authorized") return;
+    releaseStream(clientId, {
+      preferredSourceId: sources[displayIdx]?.id ?? null,
+      preferredSourceIndex: displayIdx,
+    });
     setDisplayIdx(idx);
-    releaseStream(clientId);
-    queueMicrotask(() => acquireStream(clientId, { preferredSourceId: sourceId }));
+    queueMicrotask(() =>
+      acquireStream(clientId, {
+        preferredSourceId: sourceId,
+        preferredSourceIndex: idx,
+      }),
+    );
   };
 
   if (streamAuth.status === "loading") {

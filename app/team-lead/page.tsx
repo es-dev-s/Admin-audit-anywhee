@@ -1,181 +1,218 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
-import { useMemo, useState } from "react";
-import { ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { ShieldCheck, RefreshCw } from "lucide-react";
 import { AnimatedPage } from "@/components/ui/AnimatedPage";
-import { teams } from "@/lib/mockData";
-import { useAuditStore } from "@/store/auditStore";
+import { useAuth } from "@/context/auth-context";
+import {
+  apiListMemberAccessRequests,
+  apiReviewMemberAccessRequest,
+  type MemberAccessRequestRow,
+} from "@/lib/authClient";
+import { useMemberAccessPendingCount } from "@/hooks/useMemberAccessPendingCount";
 
-export default function TeamLeadPage() {
-  const { auditStatuses, requestedAt, acceptAudit, declineAudit } = useAuditStore();
-  const pending = useMemo(
-    () => teams.filter((team) => auditStatuses[team.id] === "pending"),
-    [auditStatuses],
+export default function TeamLeadApprovalsPage() {
+  const { state: authState } = useAuth();
+  const isTeamLead =
+    authState.status === "authenticated" &&
+    authState.user.role === "team_lead";
+
+  const { pendingCount, refresh: refreshBadge } = useMemberAccessPendingCount(
+    isTeamLead
   );
-  const [reasonBy, setReasonBy] = useState<Record<string, string>>({});
-  const [exiting, setExiting] = useState<Record<string, "approved" | "declined">>({});
+  const [requests, setRequests] = useState<MemberAccessRequestRow[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [declineFor, setDeclineFor] = useState<string | null>(null);
+  const [declineReason, setDeclineReason] = useState("");
 
-  const toggleReasonInput = (teamId: string) => {
-    setReasonBy((state) => {
-      if (state[teamId] === undefined) return { ...state, [teamId]: "" };
-      const copy = { ...state };
-      delete copy[teamId];
-      return copy;
-    });
+  const load = useCallback(async () => {
+    if (!isTeamLead) return;
+    setLoadError(null);
+    try {
+      const res = await apiListMemberAccessRequests();
+      setRequests(res.requests ?? []);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load");
+      setRequests([]);
+    }
+  }, [isTeamLead]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const pending = requests.filter((r) => r.status === "pending");
+
+  const review = async (
+    requestId: string,
+    action: "approve" | "reject",
+    reason?: string
+  ) => {
+    setBusyId(requestId);
+    try {
+      await apiReviewMemberAccessRequest({
+        requestId,
+        action,
+        declineReason: reason ?? null,
+      });
+      await load();
+      await refreshBadge();
+      setDeclineFor(null);
+      setDeclineReason("");
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      setBusyId(null);
+    }
   };
 
-  const pendingCount = pending.length;
+  if (authState.status === "loading") {
+    return (
+      <AnimatedPage>
+        <div className="flex min-h-[40dvh] items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]" />
+        </div>
+      </AnimatedPage>
+    );
+  }
+
+  if (!isTeamLead) {
+    return (
+      <AnimatedPage>
+        <p className="p-8 text-[13px] text-[var(--color-text-muted)]">
+          Only team leads can review member access requests.
+        </p>
+      </AnimatedPage>
+    );
+  }
 
   return (
     <AnimatedPage>
-      <div className="mx-auto max-w-[680px]">
-        <div className="border-b border-[var(--color-border-subtle)] pb-6 mb-8">
-          <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-text-primary)]">
-            Approvals
-          </h2>
-          <p className="mt-0.5 text-[13px] text-[var(--color-text-muted)]">
-            {pendingCount} pending authorisation{pendingCount === 1 ? "" : "s"}
-          </p>
+      <div className="mx-auto max-w-[720px]">
+        <div className="mb-6 flex items-start justify-between gap-4 border-b border-[var(--color-border-subtle)] pb-6">
+          <div>
+            <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-text-primary)]">
+              Member access requests
+            </h2>
+            <p className="mt-0.5 text-[13px] text-[var(--color-text-muted)]">
+              {pendingCount} pending · Approve to grant live streams (same as Access
+              Matrix / Share)
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--color-border)] px-3 text-[12px] font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+          >
+            <RefreshCw size={14} />
+            Refresh
+          </button>
         </div>
+
+        {loadError ? (
+          <p className="mb-4 text-sm text-[var(--red)]">{loadError}</p>
+        ) : null}
 
         {pending.length === 0 ? (
           <div className="flex flex-col items-center py-20 text-center rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] shadow-[var(--shadow-sm)]">
-            <ShieldCheck size={36} className="text-[var(--color-success)] opacity-60" aria-hidden />
-            <p className="mt-4 text-[15px] font-semibold text-[var(--color-text-primary)]">All clear</p>
-            <p className="mt-1 text-[12px] text-[var(--color-text-muted)]">No pending approval requests.</p>
+            <ShieldCheck
+              size={36}
+              className="text-[var(--color-success)] opacity-60"
+              aria-hidden
+            />
+            <p className="mt-4 text-[15px] font-semibold text-[var(--color-text-primary)]">
+              All clear
+            </p>
+            <p className="mt-1 text-[12px] text-[var(--color-text-muted)]">
+              No pending requests from audit members.
+            </p>
+            <Link
+              href="/audit"
+              className="mt-4 text-[13px] font-medium text-[var(--color-accent)] hover:underline"
+            >
+              Back to workspace
+            </Link>
           </div>
         ) : (
           <div className="space-y-3">
-            {pending.map((team, index) => {
-              const requestedText = requestedAt[team.id]
-                ? new Date(requestedAt[team.id]).toLocaleTimeString()
-                : "Not available";
-              const phase = exiting[team.id];
+            {pending.map((r) => (
+              <div
+                key={r.id}
+                className="rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] border-l-2 border-l-[var(--color-pending)] bg-[var(--color-bg-surface)] px-5 py-4 shadow-[var(--shadow-xs)]"
+              >
+                <p className="text-[14px] font-semibold text-[var(--color-text-primary)]">
+                  {r.memberName ?? "Audit member"}
+                </p>
+                <p className="text-[12px] text-[var(--color-text-muted)]">
+                  {r.memberEmail}
+                </p>
+                <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+                  {r.shareScope === "team"
+                    ? `Whole team: ${r.liveTeamName ?? `Org ${r.signalingOrgId}`}`
+                    : `Client stream: ${r.liveMemberName ?? r.signalClientId} · ${r.liveTeamName ?? `Org ${r.signalingOrgId}`}`}
+                </p>
+                {r.message ? (
+                  <p className="mt-1 text-[12px] italic text-[var(--color-text-tertiary)]">
+                    “{r.message}”
+                  </p>
+                ) : null}
+                <p className="mt-1 font-mono text-[10px] text-[var(--color-text-muted)]">
+                  {new Date(r.requestedAt).toLocaleString()}
+                </p>
 
-              return (
-                <motion.div
-                  key={team.id}
-                  layout
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{
-                    opacity: phase ? 0.6 : 1,
-                    x: phase ? 12 : 0,
-                  }}
-                  exit={{ opacity: 0, x: 12 }}
-                  transition={{ delay: index * 0.05, duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
-                  className={`rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] border-l-2 bg-[var(--color-bg-surface)] px-5 py-4 shadow-[var(--shadow-xs)] ${
-                    phase === "approved"
-                      ? "border-l-[var(--color-success)]"
-                      : phase === "declined"
-                        ? "border-l-[var(--color-danger)]"
-                        : "border-l-[var(--color-pending)]"
-                  }`}
-                >
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="min-w-0">
-                      <p className="text-[14px] font-semibold text-[var(--color-text-primary)]">{team.name}</p>
-                      <p className="mt-0.5 font-mono text-[11px] text-[var(--color-text-muted)]">{requestedText}</p>
-                      <p className="mt-1.5 text-[12px] text-[var(--color-text-secondary)]">
-                        Telemetry + live desktop audit
-                      </p>
-                    </div>
-
-                    <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
-                      <AnimatePresence mode="wait">
-                        {phase === "approved" ? (
-                          <motion.span
-                            key="ap"
-                            initial={{ opacity: 0, scale: 0.95 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            className="rounded-[var(--radius-pill)] bg-[var(--color-success-muted)] border border-[var(--color-success)]/20 px-3 py-1 text-[11px] font-semibold text-[var(--color-success)]"
-                          >
-                            Approved
-                          </motion.span>
-                        ) : phase === "declined" ? (
-                          <motion.span
-                            key="de"
-                            initial={{ opacity: 0, scale: 0.95 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            className="rounded-[var(--radius-pill)] bg-[var(--color-danger-muted)] border border-[var(--color-danger)]/20 px-3 py-1 text-[11px] font-semibold text-[var(--color-danger)]"
-                          >
-                            Declined
-                          </motion.span>
-                        ) : (
-                          <motion.div key="act" className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              className="rounded-[var(--radius-md)] border border-[var(--color-danger)]/30 px-3 py-1.5 text-[12px] font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-muted)] transition-colors"
-                              onClick={() => toggleReasonInput(team.id)}
-                            >
-                              Decline
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-[var(--radius-md)] border border-[var(--color-status-done-border)] bg-[var(--color-status-done-bg)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-status-done-text)] transition-opacity hover:opacity-90"
-                              onClick={() => {
-                                setExiting((e) => ({ ...e, [team.id]: "approved" }));
-                                window.setTimeout(() => {
-                                  acceptAudit(team.id);
-                                  setExiting((e) => { const n = { ...e }; delete n[team.id]; return n; });
-                                }, 2000);
-                              }}
-                            >
-                              Approve
-                            </button>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                {declineFor === r.id ? (
+                  <div className="mt-3">
+                    <textarea
+                      rows={2}
+                      className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-input)] px-3 py-2 text-[13px]"
+                      placeholder="Decline reason (optional)"
+                      value={declineReason}
+                      onChange={(e) => setDeclineReason(e.target.value)}
+                    />
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg border px-3 py-1.5 text-[12px]"
+                        onClick={() => setDeclineFor(null)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busyId === r.id}
+                        className="rounded-lg bg-[var(--color-danger)] px-3 py-1.5 text-[12px] font-semibold text-white"
+                        onClick={() =>
+                          void review(r.id, "reject", declineReason || undefined)
+                        }
+                      >
+                        Confirm decline
+                      </button>
                     </div>
                   </div>
-
-                  <AnimatePresence>
-                    {reasonBy[team.id] !== undefined && !phase ? (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="mt-4 overflow-hidden"
-                      >
-                        <textarea
-                          className="mb-2 w-full rounded-[var(--radius-md)] border border-[var(--color-danger)]/30 bg-[var(--color-bg-input)] px-3 py-2 text-[13px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)] focus:ring-2 focus:ring-[var(--color-danger)]/20"
-                          onChange={(event) => {
-                            const reason = event.target.value;
-                            setReasonBy((state) => ({ ...state, [team.id]: reason }));
-                          }}
-                          placeholder="Decline reason"
-                          value={reasonBy[team.id]}
-                          rows={3}
-                        />
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            className="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] px-3 py-1.5 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
-                            onClick={() => toggleReasonInput(team.id)}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            className="rounded-[var(--radius-md)] bg-[var(--color-danger)] px-3 py-1.5 text-[12px] font-semibold text-white hover:opacity-90"
-                            onClick={() => {
-                              setExiting((e) => ({ ...e, [team.id]: "declined" }));
-                              const reason = reasonBy[team.id] || "Policy conflict";
-                              window.setTimeout(() => {
-                                declineAudit(team.id, reason);
-                                setExiting((e) => { const n = { ...e }; delete n[team.id]; return n; });
-                              }, 2000);
-                            }}
-                          >
-                            Confirm decline
-                          </button>
-                        </div>
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                </motion.div>
-              );
-            })}
+                ) : (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={busyId === r.id}
+                      className="rounded-lg border border-[var(--color-danger)]/30 px-3 py-1.5 text-[12px] font-medium text-[var(--color-danger)]"
+                      onClick={() => setDeclineFor(r.id)}
+                    >
+                      Decline
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyId === r.id}
+                      className="rounded-lg border border-[var(--color-status-done-border)] bg-[var(--color-status-done-bg)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-status-done-text)]"
+                      onClick={() => void review(r.id, "approve")}
+                    >
+                      {busyId === r.id ? "Working…" : "Approve & grant access"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>

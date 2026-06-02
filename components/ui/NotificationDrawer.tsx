@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { BellOff, X } from "lucide-react";
+import Link from "next/link";
 import { useEffect } from "react";
 
 export function NotificationDrawer({
@@ -85,8 +86,15 @@ export function NotificationDrawer({
                         Pending audit approvals
                       </p>
                       <p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">
-                        {pendingCount} {teamWord} awaiting authorisation
+                        {pendingCount} audit member {teamWord === "team" ? "requests" : "request"} awaiting your approval
                       </p>
+                      <Link
+                        href="/team-lead"
+                        onClick={onClose}
+                        className="mt-2 inline-block text-[12px] font-medium text-[var(--color-accent)] hover:underline"
+                      >
+                        Open Approvals
+                      </Link>
                       <p className="mt-1.5 text-[10px] text-[var(--color-text-muted)]">Just now</p>
                     </div>
                   </div>

@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 import { getAuthUser, getAccessGrant, ok, err } from "@/lib/server/authHelpers";
-import { isTeamLeadOrgApproved } from "@/lib/server/teamLeadOrgAccess";
+import {
+  isTeamLeadOrgApproved,
+  teamLeadShareDeniedMessage,
+} from "@/lib/server/teamLeadOrgAccess";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -17,10 +20,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       }
       const allowed = await isTeamLeadOrgApproved(authUser.id, orgNum);
       if (!allowed) {
-        return err(
-          "Super-admin approval is required before viewing this team's directory",
-          403
-        );
+        return err(await teamLeadShareDeniedMessage(authUser.id), 403);
       }
 
       const { data, error } = await supabase
