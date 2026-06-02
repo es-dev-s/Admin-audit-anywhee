@@ -13,7 +13,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') })
 const wss =
   process.argv[2] ||
   process.env.NEXT_PUBLIC_ANYWHERE_SIGNALING_WSS ||
-  'ws://localhost:8085'
+  'ws://10.80.80.221:18085'
 const token = (process.env.NEXT_PUBLIC_WS_CONNECT_TOKEN || '').replace(/^"|"$/g, '')
 const org = (process.env.NEXT_PUBLIC_AUDIT_ORG_NAME || 'esadmin').replace(/^"|"$/g, '')
 const user = (process.env.NEXT_PUBLIC_AUDIT_USERNAME || 'root').replace(/^"|"$/g, '')
