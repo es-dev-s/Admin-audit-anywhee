@@ -10,9 +10,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
-
-  /* Cinema mode: full-page stream view — hide sidebar + topbar */
+  /* Cinema mode: full-page stream view for /audit/[teamId]/[memberId] */
   const isCinema = Boolean(pathname.match(/^\/audit\/\d+\/\d+$/));
+  const isLiveFeed = pathname.startsWith("/audit/live");
 
   if (isCinema) {
     return (
@@ -45,10 +45,18 @@ export function AppShell({ children }: { children: ReactNode }) {
       >
         <Topbar onOpenMobile={() => setMobileOpen(true)} />
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
+        <main
+          className={cn(
+            "min-h-0 flex-1",
+            isLiveFeed ? "flex flex-col overflow-hidden" : "overflow-y-auto",
+          )}
+        >
           <div
             className={cn(
-              "mx-auto w-full max-w-[var(--content-max-width)] px-8 py-8",
+              "mx-auto w-full",
+              isLiveFeed
+                ? "flex h-full min-h-0 max-w-[1800px] flex-1 flex-col px-3 py-3 sm:px-4 sm:py-4"
+                : "max-w-[var(--content-max-width)] px-8 py-8",
             )}
           >
             {children}

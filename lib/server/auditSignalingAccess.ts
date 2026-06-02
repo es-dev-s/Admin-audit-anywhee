@@ -1,6 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
 import { getAccessGrant } from "@/lib/server/authHelpers";
-import { isTeamLeadOrgApproved } from "@/lib/server/teamLeadOrgAccess";
 
 function idMatches(ids: string[], value: number): boolean {
   const key = String(value);
@@ -12,7 +11,13 @@ export type AuditSignalingAccessResult =
   | { ok: false; status: number; message: string };
 
 /**
- * Same rules as `/api/audit/signaling-stream-auth`: who may view signaling data for org + client.
+ * Server-side gate: can this user view a specific signaling org+client?
+ *
+ * For team_lead: checks admin_audit_group_members → admin_audit_group_clients
+ *   (admin-assigned groups). Falls back to old team_lead_org_access if no
+ *   groups are assigned yet (backward compat).
+ *
+ * For audit_member: checks access_grants (unchanged).
  */
 export async function assertAuditSignalingClientAccess(params: {
   userId: string;
@@ -21,6 +26,7 @@ export async function assertAuditSignalingClientAccess(params: {
   signalClientId: number;
 }): Promise<AuditSignalingAccessResult> {
   const { userId, role, signalOrgId, signalClientId } = params;
+
   if (
     !Number.isFinite(signalOrgId) ||
     signalOrgId <= 0 ||
@@ -30,18 +36,59 @@ export async function assertAuditSignalingClientAccess(params: {
     return { ok: false, status: 400, message: "Invalid org or client id" };
   }
 
+  // ── Team lead ────────────────────────────────────────────────────────────
   if (role === "team_lead") {
-    const allowed = await isTeamLeadOrgApproved(userId, signalOrgId);
-    if (!allowed) {
-      return {
-        ok: false,
-        status: 403,
-        message: "Super-admin approval is required before viewing this organization",
-      };
+    // 1. Check admin-assigned groups first.
+    // Fetch team lead's group ids first, then check if client is in any of them.
+    const { data: memberRows, error: mErr } = await supabase
+      .from("admin_audit_group_members")
+      .select("group_id")
+      .eq("team_lead_id", userId);
+
+    if (mErr) {
+      console.error("[auditSignalingAccess] member group lookup error", mErr.message);
+      return { ok: false, status: 500, message: "Internal server error" };
     }
-    return { ok: true };
+
+    const groupIds = (memberRows ?? []).map((r) => r.group_id as string);
+
+    let groupRow: { signal_client_id: number } | null = null;
+
+    if (groupIds.length > 0) {
+      const { data, error } = await supabase
+        .from("admin_audit_group_clients")
+        .select("signal_client_id")
+        .eq("signal_client_id", signalClientId)
+        .in("group_id", groupIds)
+        .maybeSingle();
+      if (error) {
+        console.error("[auditSignalingAccess] group client lookup error", error.message);
+        return { ok: false, status: 500, message: "Internal server error" };
+      }
+      groupRow = data as { signal_client_id: number } | null;
+    }
+
+    if (groupRow) return { ok: true };
+
+    // 2. Backward-compat: fall back to old team_lead_org_access approved status.
+    const { data: accessRow } = await supabase
+      .from("team_lead_org_access")
+      .select("status")
+      .eq("team_lead_id", userId)
+      .eq("signaling_org_id", signalOrgId)
+      .maybeSingle();
+
+    if (accessRow?.status === "approved") return { ok: true };
+
+    return {
+      ok: false,
+      status: 403,
+      message:
+        "This client is not in any group assigned to you. Ask your admin to grant access.",
+    };
   }
 
+  // ── Audit member ──────────────────────────────────────────────────────────
   if (role !== "audit_member") {
     return { ok: false, status: 403, message: "Forbidden" };
   }
@@ -56,9 +103,7 @@ export async function assertAuditSignalingClientAccess(params: {
   const teamWide =
     idMatches(grant.team_ids, signalOrgId) || idMatches(grant.signaling_org_ids, signalOrgId);
 
-  if (teamWide) {
-    return { ok: true };
-  }
+  if (teamWide) return { ok: true };
 
   if (grant.member_ids.length === 0) {
     return { ok: false, status: 403, message: "Organization not in your access scope" };
@@ -75,9 +120,7 @@ export async function assertAuditSignalingClientAccess(params: {
   }
 
   const allowedOrgs = new Set((rows ?? []).map((r) => String(r.org_id)));
-  if (allowedOrgs.has(String(signalOrgId))) {
-    return { ok: true };
-  }
+  if (allowedOrgs.has(String(signalOrgId))) return { ok: true };
 
   return { ok: false, status: 403, message: "Organization not in your access scope" };
 }

@@ -22,9 +22,21 @@ import type { MergedAccessGrant } from "@/lib/accessGrantTypes";
 import type { BrowserTabAnalyticsSnapshot } from "@/lib/browserTabAnalyticsTypes";
 import { parseBrowserTabRow, parseInteractionEvent } from "@/lib/browserTabAnalyticsTypes";
 import { resolveSignalingWssUrl } from "@/lib/signalingWsUrl";
+import {
+  createAuditPeerConnection,
+  createCandidateDedupeSet,
+  safeAddIceCandidate,
+} from "@/lib/auditWebrtc";
+import {
+  countActiveStreamInterests,
+  MAX_CONCURRENT_ACTIVE_STREAMS,
+  MAX_PARALLEL_STREAM_CONNECTS,
+  STREAM_CONNECT_STAGGER_MS,
+} from "@/lib/auditStreamLimits";
 
 const DEFAULT_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 const STREAM_CONNECT_TIMEOUT_MS = 45_000;
+const CONNECT_COOLDOWN_MS = 1200;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -52,6 +64,9 @@ function parseClientRow(raw: unknown): AuditLiveClient | null {
   if (!fullName) return null;
   const status = typeof raw.status === "string" ? raw.status : "offline";
   const orgName = typeof raw.orgName === "string" ? raw.orgName : null;
+  const claimedRaw = raw.claimedOrgName;
+  const claimedOrgName =
+    typeof claimedRaw === "string" && claimedRaw.trim() ? claimedRaw.trim() : null;
   const device =
     typeof raw.device === "string"
       ? raw.device
@@ -65,6 +80,7 @@ function parseClientRow(raw: unknown): AuditLiveClient | null {
     status,
     orgId,
     orgName,
+    ...(claimedOrgName ? { claimedOrgName } : {}),
     ...(device ? { device } : {}),
     ...(email ? { email } : {}),
     screenSources: parseScreenSources(raw.screenSources),
@@ -124,6 +140,8 @@ export type AuditSignalingContextValue = {
   requestClientAppFocus: (clientId: number) => void;
   /** Present only for audit team leads: super-admin approval per signaling org. */
   teamLeadOrgAccess: TeamLeadOrgAccessState | null;
+  /** Admin-assigned groups for this team lead (group scope). Empty if no groups assigned. */
+  assignedGroups: Array<{ id: string; name: string; description: string | null; signalClientIds: number[] }>;
   /**
    * Signaling HTTP API (`GET /api/browser-tab-events`, etc.) — set after WebSocket `admin-login-response`.
    * Pass as `x-signaling-session` to `/api/audit/browser-extension-timeline` (server proxies to signaling).
@@ -150,6 +168,11 @@ type TlAccessInternal = {
   loaded: boolean;
   byOrg: Map<number, Exclude<TeamLeadOrgAccessStatus, "none">>;
   approved: Set<number>;
+  /** When non-null, only these client ids are visible (admin-group scope). */
+  allowedClientIds: Set<number> | null;
+  /** Admin-assigned group names + per-group client ids for display. */
+  groups: Array<{ id: string; name: string; description: string | null; signalClientIds: number[] }>;
+  hasGroupScope: boolean;
 };
 
 export function AuditSignalingProvider({ children }: { children: ReactNode }) {
@@ -164,6 +187,9 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     loaded: false,
     byOrg: new Map(),
     approved: new Set(),
+    allowedClientIds: null,
+    groups: [],
+    hasGroupScope: false,
   });
 
   useEffect(() => {
@@ -208,6 +234,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const streamTrackReceivedRef = useRef<Set<number>>(new Set());
   const connectRetryCountRef = useRef<Map<number, number>>(new Map());
   const connectRetryTimerRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const connectQueueRef = useRef<number[]>([]);
+  const connectQueueScheduledRef = useRef(false);
+  const connectInFlightRef = useRef(0);
+  const iceDedupByClientSocketRef = useRef<Map<string, Set<string>>>(new Map());
+  const pendingIceByClientSocketRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
 
   const [connectionStatus, setConnectionStatus] = useState("Initializing…");
   const connectionStatusRef = useRef(connectionStatus);
@@ -239,6 +270,18 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       }
       pcByClientSocketRef.current.delete(clientSocketId);
     }
+    iceDedupByClientSocketRef.current.delete(clientSocketId);
+    pendingIceByClientSocketRef.current.delete(clientSocketId);
+  }, []);
+
+  const removeFromConnectQueue = useCallback((clientId: number) => {
+    connectQueueRef.current = connectQueueRef.current.filter((id) => id !== clientId);
+  }, []);
+
+  const enqueueConnect = useCallback((clientId: number) => {
+    if (!Number.isFinite(clientId) || clientId <= 0) return;
+    const q = connectQueueRef.current;
+    if (!q.includes(clientId)) q.push(clientId);
   }, []);
 
   const clearStreamConnectTimeout = useCallback((clientId: number) => {
@@ -347,12 +390,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     [send],
   );
 
-  const connectSignalingRequest = useCallback(
+  const connectSignalingRequestImmediate = useCallback(
     (clientId: number) => {
       const now = Date.now();
       const last = connectCooldownByClientRef.current.get(clientId) ?? 0;
-      // Throttle duplicate connect requests for the same client socket.
-      if (now - last < 1200) return;
+      if (now - last < CONNECT_COOLDOWN_MS) return false;
       connectCooldownByClientRef.current.set(clientId, now);
       const token = sessionTokenRef.current;
       if (!token) {
@@ -363,11 +405,54 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
             : `Not connected to signaling (${status})`,
           "error",
         );
-        return;
+        return false;
       }
       send({ type: "connect-to-client", token, clientId });
+      return true;
     },
     [send],
+  );
+
+  const pumpConnectQueue = useCallback(() => {
+    if (connectQueueScheduledRef.current) return;
+    const run = () => {
+      connectQueueScheduledRef.current = false;
+      while (
+        connectInFlightRef.current < MAX_PARALLEL_STREAM_CONNECTS &&
+        connectQueueRef.current.length > 0
+      ) {
+        const clientId = connectQueueRef.current.shift();
+        if (clientId == null) break;
+        if ((interestRef.current.get(clientId) ?? 0) <= 0) continue;
+        connectInFlightRef.current += 1;
+        const started = connectSignalingRequestImmediate(clientId);
+        if (!started) {
+          connectInFlightRef.current = Math.max(0, connectInFlightRef.current - 1);
+          if ((interestRef.current.get(clientId) ?? 0) > 0) {
+            connectQueueRef.current.unshift(clientId);
+          }
+        }
+        if (connectQueueRef.current.length > 0 || connectInFlightRef.current > 0) {
+          connectQueueScheduledRef.current = true;
+          setTimeout(run, STREAM_CONNECT_STAGGER_MS);
+          return;
+        }
+      }
+      if (connectQueueRef.current.length > 0) {
+        connectQueueScheduledRef.current = true;
+        setTimeout(run, STREAM_CONNECT_STAGGER_MS);
+      }
+    };
+    connectQueueScheduledRef.current = true;
+    queueMicrotask(run);
+  }, [connectSignalingRequestImmediate]);
+
+  const connectSignalingRequest = useCallback(
+    (clientId: number) => {
+      enqueueConnect(clientId);
+      pumpConnectQueue();
+    },
+    [enqueueConnect, pumpConnectQueue],
   );
 
   const requestClientAppFocus = useCallback(
@@ -392,9 +477,10 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const flushPendingConnects = useCallback(() => {
     connectCooldownByClientRef.current.clear();
     for (const [clientId, n] of interestRef.current) {
-      if (n > 0) connectSignalingRequestRef.current(clientId);
+      if (n > 0) enqueueConnect(clientId);
     }
-  }, []);
+    pumpConnectQueue();
+  }, [enqueueConnect, pumpConnectQueue]);
 
   const mergeOrgClients = useCallback((orgId: number, rows: unknown[]) => {
     const mapped = rows.map(parseClientRow).filter((c): c is AuditLiveClient => c !== null);
@@ -416,6 +502,16 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         preferredSourceIndex: opts?.preferredSourceIndex ?? null,
       });
       const prev = interestRef.current.get(clientId) ?? 0;
+      if (prev === 0) {
+        const active = countActiveStreamInterests(interestRef.current);
+        if (active >= MAX_CONCURRENT_ACTIVE_STREAMS) {
+          showToastRef.current(
+            `This tab supports up to ${MAX_CONCURRENT_ACTIVE_STREAMS} live streams. Disconnect one first.`,
+            "error",
+          );
+          return;
+        }
+      }
       interestRef.current.set(clientId, prev + 1);
       if (prev === 0) {
         connectSignalingRequest(clientId);
@@ -430,6 +526,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       if (n <= 0) {
         interestRef.current.delete(clientId);
         prefsRef.current.delete(clientId);
+        removeFromConnectQueue(clientId);
         const sid = clientSocketByClientIdRef.current.get(clientId);
         if (sid) {
           stopViewingServer(sid);
@@ -446,7 +543,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         interestRef.current.set(clientId, n);
       }
     },
-    [stopViewingServer, teardownPeerForClientSocket],
+    [removeFromConnectQueue, stopViewingServer, teardownPeerForClientSocket],
   );
 
   const emptyScope = useMemo<MergedAccessGrant>(
@@ -466,47 +563,76 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       : null;
 
   const loadTeamLeadOrgAccess = useCallback(() => {
-    fetch("/api/team-lead-org-access", { credentials: "include" })
+    // Primary: load admin-assigned group scope (signal_client_ids + signal_org_ids).
+    fetch("/api/audit-groups/my-scope", { credentials: "include" })
       .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
-      .then(({ ok, j }) => {
-        const byOrg = new Map<number, Exclude<TeamLeadOrgAccessStatus, "none">>();
+      .then(({ ok: scopeOk, j: scopeJ }) => {
         const approved = new Set<number>();
-        if (ok && Array.isArray(j.entries)) {
-          for (const row of j.entries as Array<{
-            signalingOrgId?: number;
-            status?: string;
-          }>) {
-            const oid = Number(row.signalingOrgId);
-            const st = row.status;
-            if (!Number.isFinite(oid) || oid <= 0) continue;
-            if (
-              st === "pending" ||
-              st === "approved" ||
-              st === "rejected" ||
-              st === "revoked"
-            ) {
-              byOrg.set(oid, st);
-              if (st === "approved") approved.add(oid);
+        const byOrg = new Map<number, Exclude<TeamLeadOrgAccessStatus, "none">>();
+
+        if (scopeOk && Array.isArray(scopeJ.signalOrgIds) && scopeJ.signalOrgIds.length > 0) {
+          // Has admin-assigned groups: build approved set from group org ids.
+          for (const oid of scopeJ.signalOrgIds as number[]) {
+            if (Number.isFinite(oid) && oid > 0) {
+              approved.add(oid);
+              byOrg.set(oid, "approved");
             }
           }
+          // Also store the allowed client ids for use in filtering.
+          const allowedClientIds: number[] = Array.isArray(scopeJ.signalClientIds)
+            ? (scopeJ.signalClientIds as number[])
+            : [];
+          setTlAccess({
+            loaded: true,
+            byOrg,
+            approved,
+            allowedClientIds: new Set(allowedClientIds),
+            groups: Array.isArray(scopeJ.groups)
+              ? (scopeJ.groups as Array<{ id: string; name: string; description: string | null; signalClientIds: number[] }>)
+              : [],
+            hasGroupScope: true,
+          });
+          return;
         }
-        setTlAccess({ loaded: true, byOrg, approved });
+
+        // Fallback: old team_lead_org_access request/approve flow.
+        fetch("/api/team-lead-org-access", { credentials: "include" })
+          .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+          .then(({ ok, j }) => {
+            if (ok && Array.isArray(j.entries)) {
+              for (const row of j.entries as Array<{ signalingOrgId?: number; status?: string }>) {
+                const oid = Number(row.signalingOrgId);
+                const st = row.status;
+                if (!Number.isFinite(oid) || oid <= 0) continue;
+                if (st === "pending" || st === "approved" || st === "rejected" || st === "revoked") {
+                  byOrg.set(oid, st);
+                  if (st === "approved") approved.add(oid);
+                }
+              }
+            }
+            setTlAccess({ loaded: true, byOrg, approved, allowedClientIds: null, groups: [], hasGroupScope: false });
+          })
+          .catch(() => {
+            setTlAccess({ loaded: true, byOrg: new Map(), approved: new Set(), allowedClientIds: null, groups: [], hasGroupScope: false });
+          });
       })
       .catch(() => {
-        setTlAccess({ loaded: true, byOrg: new Map(), approved: new Set() });
+        setTlAccess({ loaded: true, byOrg: new Map(), approved: new Set(), allowedClientIds: null, groups: [], hasGroupScope: false });
       });
   }, []);
 
+  const tlAccessReset: TlAccessInternal = { loaded: false, byOrg: new Map(), approved: new Set(), allowedClientIds: null, groups: [], hasGroupScope: false };
+
   useEffect(() => {
     if (authState.status !== "authenticated") {
-      setTlAccess({ loaded: false, byOrg: new Map(), approved: new Set() });
+      setTlAccess(tlAccessReset);
       return;
     }
     if (authState.user.role !== "team_lead") {
-      setTlAccess({ loaded: false, byOrg: new Map(), approved: new Set() });
+      setTlAccess(tlAccessReset);
       return;
     }
-    setTlAccess({ loaded: false, byOrg: new Map(), approved: new Set() });
+    setTlAccess(tlAccessReset);
     loadTeamLeadOrgAccess();
   }, [
     authState.status,
@@ -529,9 +655,17 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
 
   const { clients: visibleClients, orgs: visibleOrgs } = useMemo(() => {
     if (authState.status === "authenticated" && authState.user.role === "team_lead") {
-      if (!tlAccess.loaded) {
-        return { clients: [], orgs };
+      if (!tlAccess.loaded) return { clients: [], orgs };
+
+      if (tlAccess.hasGroupScope && tlAccess.allowedClientIds != null) {
+        // Admin-group scope: only the specific clients in the assigned groups.
+        const allowed = tlAccess.allowedClientIds;
+        const filtered = clients.filter((c) => allowed.has(c.id));
+        const orgIds = new Set(filtered.map((c) => c.orgId));
+        return { clients: filtered, orgs: orgs.filter((o) => orgIds.has(o.id)) };
       }
+
+      // Fallback: old org-level approval scope.
       return filterSignalingRosterForTeamLead(clients, orgs, tlAccess.approved);
     }
     return filterSignalingRosterForMember(clients, orgs, scopeForFilter);
@@ -540,8 +674,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     clients,
     orgs,
     scopeForFilter,
-    tlAccess.approved,
-    tlAccess.loaded,
+    tlAccess,
   ]);
 
   const getClient = useCallback(
@@ -722,6 +855,8 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         }
         case "connect-response": {
           const clientId = Number(msg.clientId);
+          connectInFlightRef.current = Math.max(0, connectInFlightRef.current - 1);
+          pumpConnectQueue();
           if (msg.success !== true) {
             const text =
               typeof msg.message === "string" && msg.message.trim()
@@ -730,7 +865,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
                   ? msg.error
                   : "Could not connect to client";
             if (Number.isFinite(clientId) && clientId > 0) {
+              const errCode = typeof msg.error === "string" ? msg.error : "";
+              const limitHit =
+                errCode === "ADMIN_VIEWER_LIMIT" || errCode === "CLIENT_VIEWER_LIMIT";
               const retryable =
+                !limitHit &&
                 /connection not found|client unavailable|not available/i.test(text);
               if (retryable) scheduleConnectRetry(clientId, text);
               else failClientStream(clientId, text);
@@ -764,8 +903,10 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
 
           const ice = iceServersRef.current.length > 0 ? iceServersRef.current : DEFAULT_ICE;
           teardownPeerForClientSocket(clientSocketId);
-          const pc = new RTCPeerConnection({ iceServers: ice });
+          const pc = createAuditPeerConnection(ice);
           pcByClientSocketRef.current.set(clientSocketId, pc);
+          iceDedupByClientSocketRef.current.set(clientSocketId, createCandidateDedupeSet());
+          pendingIceByClientSocketRef.current.set(clientSocketId, []);
 
           pc.addTransceiver("video", { direction: "recvonly" });
 
@@ -822,6 +963,23 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           if (pc && sdp) {
             try {
               await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+              const fromSocketId = String(msg.fromSocketId || "");
+              const queue = fromSocketId
+                ? pendingIceByClientSocketRef.current.get(fromSocketId) ?? []
+                : [];
+              if (fromSocketId) pendingIceByClientSocketRef.current.set(fromSocketId, []);
+              const dedupe =
+                (fromSocketId && iceDedupByClientSocketRef.current.get(fromSocketId)) ||
+                createCandidateDedupeSet();
+              if (fromSocketId) iceDedupByClientSocketRef.current.set(fromSocketId, dedupe);
+              for (const c of queue) {
+                if (!c.candidate) continue;
+                await safeAddIceCandidate(pc, dedupe, {
+                  candidate: c.candidate,
+                  sdpMid: c.sdpMid ?? null,
+                  sdpMLineIndex: c.sdpMLineIndex ?? null,
+                });
+              }
             } catch (e) {
               console.error("[audit] setRemoteDescription answer failed", e);
             }
@@ -832,13 +990,21 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           const candidate = msg.candidate as RTCIceCandidateInit | undefined;
           const fromSocketId = String(msg.fromSocketId || "");
           const pc = fromSocketId ? pcByClientSocketRef.current.get(fromSocketId) : null;
-          if (pc && candidate?.candidate) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(candidate));
-            } catch {
-              /* ignore */
-            }
+          if (!pc || !candidate?.candidate || !fromSocketId) break;
+          if (!pc.remoteDescription || !pc.localDescription) {
+            const q = pendingIceByClientSocketRef.current.get(fromSocketId) ?? [];
+            q.push(candidate);
+            pendingIceByClientSocketRef.current.set(fromSocketId, q);
+            break;
           }
+          const dedupe =
+            iceDedupByClientSocketRef.current.get(fromSocketId) ?? createCandidateDedupeSet();
+          iceDedupByClientSocketRef.current.set(fromSocketId, dedupe);
+          await safeAddIceCandidate(pc, dedupe, {
+            candidate: candidate.candidate,
+            sdpMid: candidate.sdpMid ?? null,
+            sdpMLineIndex: candidate.sdpMLineIndex ?? null,
+          });
           break;
         }
         case "admin-focus-client-app-response": {
@@ -916,7 +1082,15 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       }
       wsRef.current = null;
     };
-  }, [flushPendingConnects, mergeOrgClients, send, stopViewingServer, teardownPeerForClientId, teardownPeerForClientSocket]);
+  }, [
+    flushPendingConnects,
+    mergeOrgClients,
+    pumpConnectQueue,
+    send,
+    stopViewingServer,
+    teardownPeerForClientId,
+    teardownPeerForClientSocket,
+  ]);
 
   const value = useMemo<AuditSignalingContextValue>(
     () => ({
@@ -933,6 +1107,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       getClient,
       requestClientAppFocus,
       teamLeadOrgAccess,
+      assignedGroups: tlAccess.groups,
       signalingSessionToken,
     }),
     [
@@ -949,6 +1124,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       requestClientAppFocus,
       streams,
       teamLeadOrgAccess,
+      tlAccess.groups,
       signalingSessionToken,
     ],
   );

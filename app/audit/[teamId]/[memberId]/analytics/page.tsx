@@ -9,6 +9,7 @@ import { ExtensionAnalyticsPanel } from "@/components/audit/ExtensionAnalyticsPa
 import { useAuditSignaling } from "@/context/audit-signaling-context";
 import { useBrowserTabSnapshotMerge } from "@/hooks/useBrowserTabSnapshotMerge";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
+import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
 import { useUIStore } from "@/store/uiStore";
 
 export default function MemberExtensionAnalyticsPage() {
@@ -40,14 +41,17 @@ export default function MemberExtensionAnalyticsPage() {
   });
 
   const memberName = client?.fullName ?? `Client ${clientId}`;
+  const orgName = client?.orgName ?? null;
+  const claimedOrgName = client?.claimedOrgName ?? null;
+  const headerSubtitle = memberOrgPlainText(memberName, orgName, orgId, claimedOrgName);
   const live = connectionStatus === "Live";
 
-  const headerKey = `${orgId}::${clientId}::${memberName}`;
+  const headerKey = `${orgId}::${clientId}::${headerSubtitle}`;
   useEffect(() => {
     if (!Number.isFinite(orgId) || orgId <= 0 || !Number.isFinite(clientId) || clientId <= 0) return;
-    useUIStore.getState().setHeader("Browser analytics", memberName);
+    useUIStore.getState().setHeader("Browser analytics", headerSubtitle);
     return () => useUIStore.getState().setHeader("", "");
-  }, [headerKey, orgId, clientId, memberName]);
+  }, [headerKey, orgId, clientId, headerSubtitle]);
 
   const backHref = useMemo(() => {
     if (Number.isFinite(orgId) && orgId > 0) return `/audit/${orgId}`;
@@ -112,6 +116,8 @@ export default function MemberExtensionAnalyticsPage() {
         teamClients={teamClients}
         signalingSessionToken={signalingSessionToken}
         memberName={memberName}
+        orgName={orgName}
+        claimedOrgName={claimedOrgName}
         snapshot={snapshot}
         signalingConnected={live}
         activityLogHref={`/audit/${orgId}/${clientId}/analytics/activity`}

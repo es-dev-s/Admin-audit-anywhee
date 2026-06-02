@@ -29,7 +29,7 @@ export default function AuditPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const { state: authState } = useAuth();
-  const { orgs, clients, connectionStatus, teamLeadOrgAccess } = useAuditSignaling();
+  const { orgs, clients, connectionStatus, teamLeadOrgAccess, assignedGroups } = useAuditSignaling();
   const [shareOrg, setShareOrg] = useState<{ id: number; name: string } | null>(null);
 
   const isTeamLead =
@@ -105,9 +105,83 @@ export default function AuditPage() {
     filtered.length === 0 &&
     (connectionStatus.includes("Missing") || connectionStatus.includes("credentials"));
 
+  // Build a map of clientId → client for group member display.
+  const clientById = useMemo(() => {
+    const m = new Map<number, (typeof clients)[0]>();
+    for (const c of clients) m.set(c.id, c);
+    return m;
+  }, [clients]);
+
   return (
     <AnimatedPage>
       <div className="flex w-full flex-col">
+
+        {/* ── Assigned groups banner (team lead only) ── */}
+        {isTeamLead && assignedGroups.length > 0 && (
+          <div className="mb-8 rounded-[var(--radius-xl)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-5 shadow-[var(--shadow-sm)]">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]">
+                Your assigned groups
+              </span>
+              <span className="rounded-full bg-[var(--color-accent-subtle)] px-2 py-0.5 text-[10px] font-bold text-[var(--color-accent)]">
+                {assignedGroups.length}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-4">
+              {assignedGroups.map((g) => (
+                <div
+                  key={g.id}
+                  className="min-w-[180px] rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] p-4"
+                >
+                  <p className="text-[13px] font-semibold text-[var(--color-text-primary)]">{g.name}</p>
+                  {g.description && (
+                    <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{g.description}</p>
+                  )}
+                  <p className="mt-2 text-[11px] font-medium text-[var(--color-text-secondary)]">
+                    {g.signalClientIds.length} client{g.signalClientIds.length !== 1 ? "s" : ""}
+                  </p>
+                  {g.signalClientIds.length > 0 && (
+                    <ul className="mt-2 flex flex-col gap-1">
+                      {g.signalClientIds.slice(0, 5).map((cid) => {
+                        const c = clientById.get(cid);
+                        if (!c) return null;
+                        const org = (c.claimedOrgName || c.orgName || "").trim();
+                        return (
+                          <li key={cid} className="flex items-center gap-1.5 text-[11px]">
+                            <span
+                              className="h-1.5 w-1.5 shrink-0 rounded-full"
+                              style={{
+                                background:
+                                  c.status === "sharing"
+                                    ? "var(--color-success)"
+                                    : c.status === "online"
+                                      ? "var(--color-warning)"
+                                      : "var(--color-text-muted)",
+                              }}
+                            />
+                            <span className="font-medium text-[var(--color-text-primary)]">{c.fullName}</span>
+                            {org && (
+                              <span className="text-[var(--color-text-tertiary)]">· {org}</span>
+                            )}
+                            <span className={`ml-auto text-[9px] font-bold uppercase ${c.status === "sharing" ? "text-[var(--color-success)]" : c.status === "online" ? "text-[var(--color-warning)]" : "text-[var(--color-text-muted)]"}`}>
+                              {c.status}
+                            </span>
+                          </li>
+                        );
+                      })}
+                      {g.signalClientIds.length > 5 && (
+                        <li className="text-[11px] text-[var(--color-text-tertiary)]">
+                          +{g.signalClientIds.length - 5} more
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-[var(--color-border-subtle)] pb-8">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">

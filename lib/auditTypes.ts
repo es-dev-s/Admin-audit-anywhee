@@ -5,6 +5,8 @@ export type AuditLiveClient = {
   status: string;
   orgId: number;
   orgName: string | null;
+  /** Org string from client app enrollment (`client-auth` orgName), not audit team title. */
+  claimedOrgName?: string | null;
   /** When signaling includes device id / label (optional). */
   device?: string | null;
   /** When signaling or API merges user email (optional). */

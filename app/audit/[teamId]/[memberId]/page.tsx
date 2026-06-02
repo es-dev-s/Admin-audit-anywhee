@@ -9,6 +9,7 @@ import { LiveScreenPanel } from "@/components/members/LiveScreenPanel";
 import { ActivityLog } from "@/components/members/ActivityLog";
 import { useAuditSignaling } from "@/context/audit-signaling-context";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
+import { resolveClientEnrollmentOrg } from "@/lib/memberOrgDisplay";
 
 function MemberLiveBody({
   orgId,
@@ -39,7 +40,13 @@ function MemberLiveBody({
   const canStream = client?.status === "sharing" || client?.status === "online";
   const memberName = client?.fullName ?? `Client ${clientId}`;
   const title = client ? `${client.fullName}` : `Client ${clientId}`;
-  const orgLabel = orgName ?? (Number.isFinite(orgId) ? `Team ${orgId}` : null);
+  const orgLabel = client
+    ? resolveClientEnrollmentOrg({
+        claimedOrgName: client.claimedOrgName,
+        orgName: client.orgName,
+        orgId,
+      })
+    : orgName ?? (Number.isFinite(orgId) ? `Team ${orgId}` : null);
 
   const onDisplayChange = (sourceId: string, idx: number) => {
     if (streamAuth.status !== "authorized") return;
@@ -108,7 +115,8 @@ function MemberLiveBody({
             memberName={memberName}
             teamId={Number.isFinite(orgId) ? orgId : 0}
             memberId={clientId}
-            orgLabel={orgLabel}
+            orgLabel={client?.orgName ?? orgName}
+            claimedOrgName={client?.claimedOrgName}
             isStreaming={!!canStream}
             mediaStream={stream ?? null}
             fillContainer

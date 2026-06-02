@@ -37,8 +37,9 @@ export function filterSignalingRosterForMember(
 }
 
 /**
- * Team leads: hide live roster clients until super-admin approves per signaling org.
- * Orgs list stays complete so the dashboard can show every team with access status.
+ * Team leads (old org-approval flow): hide clients until super-admin approves per
+ * signaling org. Orgs are also filtered to only approved ones so the workspace
+ * doesn't show organisations the team lead has no access to.
  */
 export function filterSignalingRosterForTeamLead(
   clients: AuditLiveClient[],
@@ -46,8 +47,10 @@ export function filterSignalingRosterForTeamLead(
   approvedOrgIds: Set<number>
 ): { clients: AuditLiveClient[]; orgs: AuditOrg[] } {
   if (approvedOrgIds.size === 0) {
-    return { clients: [], orgs };
+    // No approved orgs → show nothing at all.
+    return { clients: [], orgs: [] };
   }
   const filteredClients = clients.filter((c) => approvedOrgIds.has(c.orgId));
-  return { clients: filteredClients, orgs };
+  const filteredOrgs = orgs.filter((o) => approvedOrgIds.has(o.id));
+  return { clients: filteredClients, orgs: filteredOrgs };
 }

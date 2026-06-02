@@ -13,6 +13,7 @@ import {
   TextSelect,
   Type,
 } from "lucide-react";
+import { memberOrgPlainTextFromClient } from "@/lib/memberOrgDisplay";
 import type { AuditLiveClient } from "@/lib/auditTypes";
 import {
   classifyCopyPasteType,
@@ -443,7 +444,7 @@ export function MemberClientPicker({
       >
         {sorted.map((c) => (
           <option key={c.id} value={String(c.id)}>
-            {c.fullName}
+            {memberOrgPlainTextFromClient(c)}
             {c.device ? ` — ${c.device}` : ""}
           </option>
         ))}

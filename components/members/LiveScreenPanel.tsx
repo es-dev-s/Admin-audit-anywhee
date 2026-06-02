@@ -3,17 +3,22 @@
 import { BadgeCheck, PauseCircle, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FlagModal } from "@/components/audit/FlagModal";
+import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
 import { FocusClientAppButton } from "@/components/audit/FocusClientAppButton";
 import { StreamToolbar } from "@/components/audit/StreamToolbar";
 import { useRecentStore } from "@/store/recentStore";
 import type { AuditLiveClient } from "@/lib/auditTypes";
+import { cn } from "@/lib/utils";
 
 type LiveScreenPanelProps = {
   title: string;
   memberName: string;
   teamId: number;
   memberId: number;
+  /** Signaling org row name (fallback). */
   orgLabel?: string | null;
+  /** Org string from client-dashboard enrollment. */
+  claimedOrgName?: string | null;
   compact?: boolean;
   isStreaming?: boolean;
   mediaStream?: MediaStream | null;
@@ -22,6 +27,8 @@ type LiveScreenPanelProps = {
   screenSources?: AuditLiveClient["screenSources"];
   displayIndex?: number;
   onDisplayChange?: (sourceId: string, index: number) => void;
+  /** Tight surveillance tile: edge-to-edge video, minimal chrome */
+  surveillanceTile?: boolean;
 };
 
 function DesktopSkeleton() {
@@ -50,6 +57,7 @@ export function LiveScreenPanel({
   teamId,
   memberId,
   orgLabel,
+  claimedOrgName,
   compact = false,
   isStreaming = true,
   mediaStream,
@@ -58,6 +66,7 @@ export function LiveScreenPanel({
   screenSources = [],
   displayIndex = 0,
   onDisplayChange,
+  surveillanceTile = false,
 }: LiveScreenPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -205,20 +214,29 @@ export function LiveScreenPanel({
   const connecting = isStreaming && !mediaStream;
   const offline = !isStreaming;
 
-  const rootClass = [
-    "cinema-container flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)]",
-    fillContainer ? "h-full min-h-0" : "min-h-0",
-    className,
-  ].filter(Boolean).join(" ");
+  // Surveillance tile: the caller's absolute-inset-0 wrapper already provides
+  // the positioned context. The panel fills it completely.
+  const rootClass = surveillanceTile
+    ? ["absolute inset-0 overflow-hidden bg-black", className].filter(Boolean).join(" ")
+    : [
+        "cinema-container flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)]",
+        fillContainer ? "h-full min-h-0" : "min-h-0",
+        className,
+      ].filter(Boolean).join(" ");
 
-  const stageClass = compact
-    ? "min-h-[140px] sm:min-h-[160px]"
-    : "min-h-[min(52dvh,520px)] sm:min-h-[min(56dvh,580px)] lg:min-h-0 lg:flex-1";
+  // Stage class: in surveillance tile mode use absolute inset-0 so the video
+  // stage fills the root regardless of flex-chain height issues.
+  const stageClass = surveillanceTile
+    ? "absolute inset-0"
+    : compact
+      ? "min-h-[140px] sm:min-h-[160px]"
+      : "min-h-[min(52dvh,520px)] sm:min-h-[min(56dvh,580px)] lg:min-h-0 lg:flex-1";
 
   return (
     <>
       <div ref={panelRef} className={rootClass}>
         {/* ── Minimal header bar ── */}
+        {!surveillanceTile ? (
         <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/60 to-transparent pointer-events-none">
           <div className="flex items-center gap-2.5 pointer-events-auto">
             <div className="relative shrink-0">
@@ -241,12 +259,15 @@ export function LiveScreenPanel({
                 </span>
               ) : null}
             </div>
-            <div>
-              <p className="text-[12px] font-semibold text-white/90 leading-none">{title}</p>
-              {orgLabel ? (
-                <p className="text-[10px] font-mono text-white/40 mt-0.5">{orgLabel}</p>
-              ) : null}
-            </div>
+            <MemberOrgLabel
+              fullName={memberName}
+              claimedOrgName={claimedOrgName}
+              orgName={orgLabel}
+              orgId={teamId}
+              size="sm"
+              tone="on-dark"
+              className="max-w-[min(100%,18rem)]"
+            />
           </div>
 
           <div className="pointer-events-auto flex items-center gap-2">
@@ -271,9 +292,10 @@ export function LiveScreenPanel({
             )}
           </div>
         </div>
+        ) : null}
 
         {/* ── Video stage ── */}
-        <div className={`relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-black ${stageClass}`}>
+        <div className={`overflow-hidden bg-black ${surveillanceTile ? stageClass : `relative flex min-h-0 w-full flex-1 flex-col ${stageClass}`}`}>
           {isStreaming ? (
             <video
               ref={videoRef}
@@ -281,7 +303,12 @@ export function LiveScreenPanel({
               playsInline
               muted
               aria-label={`${memberName}'s screen share`}
-              className="absolute inset-0 h-full w-full bg-black object-contain object-center transition-opacity duration-300 ease-out"
+              className={cn(
+                "absolute inset-0 h-full w-full bg-black transition-opacity duration-300 ease-out",
+                surveillanceTile
+                  ? "object-cover object-center"
+                  : "object-contain object-center",
+              )}
               style={{ opacity: showVideo ? 1 : 0 }}
             />
           ) : null}

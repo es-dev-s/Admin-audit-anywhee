@@ -11,6 +11,7 @@ import type {
 } from "@/lib/browserTabAnalyticsTypes";
 import { formatActiveDuration, tabRowKey } from "@/lib/browserTabAnalyticsTypes";
 import { BrowserTabDetailSidebar } from "@/components/audit/BrowserTabDetailSidebar";
+import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
 import { ExtensionHistoryTimeline, MemberClientPicker } from "@/components/audit/ExtensionHistoryTimeline";
 
 function Favicon({ url, title }: { url: string; title: string }) {
@@ -104,6 +105,8 @@ export function ExtensionAnalyticsPanel({
   teamClients,
   signalingSessionToken,
   memberName,
+  orgName,
+  claimedOrgName,
   snapshot,
   signalingConnected,
   activityLogHref,
@@ -115,6 +118,8 @@ export function ExtensionAnalyticsPanel({
   /** From signaling WebSocket login — required to load 7-day DB history via proxy API. */
   signalingSessionToken: string | null;
   memberName: string;
+  orgName?: string | null;
+  claimedOrgName?: string | null;
   snapshot: BrowserTabAnalyticsSnapshot | undefined;
   signalingConnected: boolean;
   /** When set, shows a button to the full timeline (tabs + copy/paste/type with timestamps). */
@@ -153,7 +158,14 @@ export function ExtensionAnalyticsPanel({
               </h1>
               <p className="mt-1 text-[12px] text-[var(--color-text-muted)]">
                 Live feed and stored 7-day trail for{" "}
-                <span className="font-medium text-[var(--color-text-secondary)]">{memberName}</span>
+                <MemberOrgLabel
+                  fullName={memberName}
+                  claimedOrgName={claimedOrgName}
+                  orgName={orgName}
+                  orgId={orgId}
+                  size="sm"
+                  className="inline-flex max-w-full align-middle"
+                />
                 {" — "}
                 <span className="text-[var(--color-text-muted)]">
                   Pick a member below, then review live tabs or scroll the audit trail for copy/paste and typing.

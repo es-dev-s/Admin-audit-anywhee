@@ -17,6 +17,7 @@ import { AnimatedPage } from "@/components/ui/AnimatedPage";
 import { useAuditSignaling } from "@/context/audit-signaling-context";
 import { useBrowserTabSnapshotMerge } from "@/hooks/useBrowserTabSnapshotMerge";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
+import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
 import { useUIStore } from "@/store/uiStore";
 import type { AuditableKind } from "@/lib/browserTabAnalyticsTypes";
 import {
@@ -98,16 +99,19 @@ export default function BrowserActivityLogPage() {
   });
 
   const memberName = client?.fullName ?? `Client ${clientId}`;
+  const orgName = client?.orgName ?? null;
+  const claimedOrgName = client?.claimedOrgName ?? null;
+  const headerSubtitle = memberOrgPlainText(memberName, orgName, orgId, claimedOrgName);
   const live = connectionStatus === "Live";
 
   const [filter, setFilter] = useState<FilterKind>("all");
 
-  const headerKey = `${orgId}::${clientId}::${memberName}`;
+  const headerKey = `${orgId}::${clientId}::${headerSubtitle}`;
   useEffect(() => {
     if (!Number.isFinite(orgId) || orgId <= 0 || !Number.isFinite(clientId) || clientId <= 0) return;
-    useUIStore.getState().setHeader("Browser activity log", memberName);
+    useUIStore.getState().setHeader("Browser activity log", headerSubtitle);
     return () => useUIStore.getState().setHeader("", "");
-  }, [headerKey, orgId, clientId, memberName]);
+  }, [headerKey, orgId, clientId, headerSubtitle]);
 
   const parentAnalyticsHref = useMemo(() => {
     if (Number.isFinite(orgId) && orgId > 0 && Number.isFinite(clientId) && clientId > 0) {

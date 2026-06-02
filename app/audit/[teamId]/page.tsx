@@ -24,6 +24,8 @@ import { LiveScreenPanel } from "@/components/members/LiveScreenPanel";
 import { useSignalingStreamAuth } from "@/hooks/useSignalingStreamAuth";
 import { ShareAccessModal } from "@/components/audit/ShareAccessModal";
 import { useUIStore } from "@/store/uiStore";
+import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
+import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
 import type { AuditLiveClient } from "@/lib/auditTypes";
 import {
   type BrowserTabAnalyticsSnapshot,
@@ -155,7 +157,6 @@ function StreamSidePanel({
 
   const canStream = client.status === "sharing" || client.status === "online";
   const title = client.fullName;
-  const label = orgName ? orgName : `TEAM ${orgId}`;
 
   const onDisplayChange = (sourceId: string, idx: number) => {
     setDisplayIdx(idx);
@@ -197,7 +198,8 @@ function StreamSidePanel({
             memberName={client.fullName}
             teamId={orgId}
             memberId={clientId}
-            orgLabel={label}
+            orgLabel={client.orgName ?? orgName}
+            claimedOrgName={client.claimedOrgName}
             isStreaming={!!canStream}
             mediaStream={stream ?? null}
             fillContainer
@@ -295,6 +297,9 @@ export default function TeamMembersPage() {
     return teamClients.filter(
       (c) =>
         c.fullName.toLowerCase().includes(q) ||
+        (c.orgName ?? "").toLowerCase().includes(q) ||
+        memberOrgPlainText(c.fullName, c.orgName, c.orgId, c.claimedOrgName).toLowerCase().includes(q) ||
+        (c.claimedOrgName ?? "").toLowerCase().includes(q) ||
         (c.email ?? "").toLowerCase().includes(q) ||
         String(c.id).includes(q)
     );
@@ -553,9 +558,14 @@ export default function TeamMembersPage() {
                         <User size={13} className="text-[var(--color-text-muted)]" />
                       </div>
                       <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
-                        <span className="text-[13px] font-semibold text-[var(--color-text-primary)] truncate">
-                          {client.fullName}
-                        </span>
+                        <MemberOrgLabel
+                          fullName={client.fullName}
+                          claimedOrgName={client.claimedOrgName}
+                          orgName={client.orgName}
+                          orgId={client.orgId}
+                          size="md"
+                          className="w-full"
+                        />
                         <span className="text-[11px] text-[var(--color-text-muted)] truncate font-mono">
                           {client.email || `ID: ${client.id}`}
                         </span>
@@ -652,7 +662,7 @@ export default function TeamMembersPage() {
                     <div className="flex flex-nowrap items-center justify-end gap-2 pt-0.5">
                       <div
                         role="toolbar"
-                        aria-label={`Actions for ${client.fullName}`}
+                        aria-label={`Actions for ${memberOrgPlainText(client.fullName, client.orgName, client.orgId, client.claimedOrgName)}`}
                         className="inline-flex shrink-0 items-stretch overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] shadow-[var(--shadow-xs)]"
                       >
                         <Link
@@ -729,7 +739,12 @@ export default function TeamMembersPage() {
           signalingOrgId={orgId}
           orgName={displayName}
           signalClientId={shareMemberClient.id}
-          memberLabel={shareMemberClient.fullName}
+          memberLabel={memberOrgPlainText(
+            shareMemberClient.fullName,
+            shareMemberClient.orgName,
+            shareMemberClient.orgId,
+            shareMemberClient.claimedOrgName,
+          )}
           memberUserId={
             matchDirectoryMember(shareMemberClient, directory)?.id ?? null
           }

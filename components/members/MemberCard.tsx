@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { ArrowRight, Monitor, User, WifiOff } from "lucide-react";
+import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
 import type { AuditLiveClient } from "@/lib/auditTypes";
 
 function statusColor(status: string): string {
@@ -31,7 +32,14 @@ export function MemberCard({ client, orgId }: { client: AuditLiveClient; orgId: 
           {initials}
         </div>
         <div className="min-w-0 flex-1">
-          <h4 className="text-[13px] font-semibold text-[var(--color-text-primary)] truncate">{client.fullName}</h4>
+          <MemberOrgLabel
+            fullName={client.fullName}
+            claimedOrgName={client.claimedOrgName}
+            orgName={client.orgName}
+            orgId={client.orgId}
+            size="md"
+            className="w-full"
+          />
           <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: ring }} aria-hidden />
             {client.status === "sharing" ? "Streaming" : client.status === "online" ? "Online" : "Offline"}

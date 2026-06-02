@@ -4,6 +4,8 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { LayoutGrid, Search, User } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MemberOrgLabel } from "@/components/audit/MemberOrgLabel";
+import { memberOrgPlainText } from "@/lib/memberOrgDisplay";
 import type { AuditLiveClient, AuditOrg } from "@/lib/auditTypes";
 
 export type SearchResult = {
@@ -12,6 +14,7 @@ export type SearchResult = {
   label: string;
   sub: string;
   kind: "team" | "member";
+  client?: AuditLiveClient;
 };
 
 function buildResults(orgs: AuditOrg[], clients: AuditLiveClient[], query: string): SearchResult[] {
@@ -24,8 +27,22 @@ function buildResults(orgs: AuditOrg[], clients: AuditLiveClient[], query: strin
     }
   }
   for (const c of clients) {
-    if (c.fullName.toLowerCase().includes(q) || String(c.id).includes(q)) {
-      out.push({ id: `client-${c.id}`, href: `/audit/${c.orgId}/${c.id}`, label: c.fullName, sub: `Member · ${c.status}`, kind: "member" });
+    const plain = memberOrgPlainText(c.fullName, c.orgName, c.orgId, c.claimedOrgName);
+    if (
+      plain.toLowerCase().includes(q) ||
+      c.fullName.toLowerCase().includes(q) ||
+      (c.claimedOrgName ?? "").toLowerCase().includes(q) ||
+      (c.orgName ?? "").toLowerCase().includes(q) ||
+      String(c.id).includes(q)
+    ) {
+      out.push({
+        id: `client-${c.id}`,
+        href: `/audit/${c.orgId}/${c.id}`,
+        label: plain,
+        sub: `Member · ${c.status}`,
+        kind: "member",
+        client: c,
+      });
     }
   }
   return out.slice(0, 24);
@@ -124,7 +141,20 @@ export function CommandSearch({
                       onMouseEnter={() => setHighlight(i)}
                     >
                       <IconFor kind={r.kind} />
-                      <span className="min-w-0 flex-1 truncate font-medium text-[var(--color-text-primary)]">{r.label}</span>
+                      {r.kind === "member" && r.client ? (
+                        <MemberOrgLabel
+                          fullName={r.client.fullName}
+                          claimedOrgName={r.client.claimedOrgName}
+                          orgName={r.client.orgName}
+                          orgId={r.client.orgId}
+                          size="sm"
+                          className="min-w-0 flex-1"
+                        />
+                      ) : (
+                        <span className="min-w-0 flex-1 truncate font-medium text-[var(--color-text-primary)]">
+                          {r.label}
+                        </span>
+                      )}
                       <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{r.sub}</span>
                     </Link>
                   </li>

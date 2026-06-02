@@ -1,0 +1,194 @@
+/* ─── Wall root ─────────────────────────────────────────────────── */
+.live-feed-wall-root {
+  --lf-gap:       1px;
+  --lf-bg:        #020202;
+  --lf-line:      #0f0f0f;
+  --lf-toolbar-h: 48px;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  background: var(--lf-bg);
+}
+
+/* When the wall element itself is the fullscreen element it fills the screen.
+   Everything else (sidebar, topbar) is naturally hidden behind it. */
+.live-feed-wall-root.is-fullscreen {
+  position: fixed;   /* fallback for browsers that don't reflow fullscreen */
+  inset: 0;
+  z-index: 9999;
+  border-radius: 0 !important;
+}
+
+/* ─── Grid ───────────────────────────────────────────────────────── */
+.live-feed-grid {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  gap: var(--lf-gap);
+  background: var(--lf-line);
+  transition:
+    grid-template-columns 0.4s cubic-bezier(0.32, 0.72, 0, 1),
+    grid-template-rows    0.4s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.live-feed-slot-cell {
+  min-width: 0;
+  min-height: 0;
+  background: var(--lf-bg);
+  position: relative;
+}
+
+/* ─── Toolbar ────────────────────────────────────────────────────── */
+.live-feed-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--color-bg-elevated, #0a0a0a);
+  border-bottom: 1px solid var(--color-border-subtle, #1a1a1a);
+  transition: opacity 0.22s ease;
+  z-index: 20;
+}
+
+/* ─── Fullscreen: toolbar is a floating overlay that auto-hides ──── */
+/*
+  .live-feed-top-trigger is an invisible zone at the top of the fullscreen
+  wall. Moving the cursor there reveals the floating toolbar. Moving away
+  hides it again. The grid tiles never trigger the toolbar — pure monitoring.
+*/
+.live-feed-top-trigger {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  /* Always has height so there's always a hoverable strip */
+  min-height: var(--lf-toolbar-h);
+}
+
+.live-feed-wall-root.is-fullscreen .live-feed-toolbar {
+  /* In fullscreen the toolbar overlays the grid, no longer in flex flow */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(8, 8, 8, 0.96);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid #222;
+}
+
+.live-feed-wall-root.is-fullscreen .live-feed-top-trigger:hover .live-feed-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Grid fills full height in fullscreen (toolbar no longer takes space) */
+.live-feed-wall-root.is-fullscreen .live-feed-grid {
+  position: absolute;
+  inset: 0;
+}
+
+/* ─── Layout pill buttons ────────────────────────────────────────── */
+.live-feed-layout-pill {
+  border: 1px solid;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.live-feed-layout-pill:hover { transform: translateY(-1px); }
+.live-feed-layout-pill.is-active { transform: scale(1.04); }
+
+/* ─── Camera number badge ────────────────────────────────────────── */
+.live-feed-cam-badge {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 30;
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(255,255,255,0.3);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ─── Identity strip (always visible) ───────────────────────────── */
+.live-feed-identity {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: linear-gradient(to top, rgba(0,0,0,0.82), transparent);
+  padding: 18px 8px 6px;
+  pointer-events: none;
+}
+
+.live-feed-identity__org {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255,255,255,0.38);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-feed-identity__device {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.68);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+/* ─── Slot hover HUD ─────────────────────────────────────────────── */
+.live-feed-slot-hud {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(to top, rgba(0,0,0,0.95) 60%, rgba(0,0,0,0.6) 80%, transparent);
+  padding: 6px 8px 8px;
+  padding-top: 28px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.live-feed-slot-cell:hover .live-feed-slot-hud,
+.live-feed-slot-cell:focus-within .live-feed-slot-hud {
+  opacity: 1;
+}
+
+/* ─── Live indicator ─────────────────────────────────────────────── */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  animation: live-pulse 2s ease-in-out infinite;
+}

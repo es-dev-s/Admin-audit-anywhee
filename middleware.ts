@@ -27,6 +27,7 @@ function needsAuthMiddleware(pathname: string): boolean {
   if (pathname === "/api/team-lead-org-access") return true;
   if (pathname.startsWith("/api/audit-captures")) return true;
   if (pathname === "/api/audit-timeline") return true;
+  if (pathname.startsWith("/api/audit-groups")) return true;
   return false;
 }
 
