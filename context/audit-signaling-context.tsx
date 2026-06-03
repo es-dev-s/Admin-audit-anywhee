@@ -287,7 +287,14 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
   const connectRetryTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const connectQueueRef = useRef<string[]>([]);
   const connectQueueScheduledRef = useRef(false);
-  const connectInFlightRef = useRef(0);
+  /** View keys with an outstanding connect-to-client (parallel cap uses Set size). */
+  const connectInFlightKeysRef = useRef<Set<string>>(new Set());
+  /** Incremented on releaseStream so late start-offer from a prior cycle is ignored. */
+  const connectGenRef = useRef<Map<string, number>>(new Map());
+  /** Generation captured when connect-to-client is sent for a viewKey. */
+  const connectGenAtStartRef = useRef<Map<string, number>>(new Map());
+  /** Pairs the latest connect-to-client request with its viewKey until connect-response. */
+  const lastConnectViewKeyByClientRef = useRef<Map<number, string>>(new Map());
   const iceDedupByViewKeyRef = useRef<Map<string, Set<string>>>(new Map());
   const pendingIceByViewKeyRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const sfuCleanupByViewKeyRef = useRef<Map<string, () => void>>(new Map());
@@ -452,6 +459,10 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       const clientId = clientIdFromViewKey(viewKey);
       if (!Number.isFinite(clientId) || clientId <= 0) return;
       clearConnectRetry(viewKey);
+      connectInFlightKeysRef.current.delete(viewKey);
+      pumpConnectQueue();
+      connectGenAtStartRef.current.delete(viewKey);
+      lastConnectViewKeyByClientRef.current.delete(clientId);
       interestRef.current.delete(viewKey);
       connectCooldownByClientRef.current.delete(clientId);
       teardownPeerForViewKey(viewKey);
@@ -672,6 +683,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     (viewKey: string) => {
       const clientId = clientIdFromViewKey(viewKey);
       if (!Number.isFinite(clientId) || clientId <= 0) return false;
+      if (connectInFlightKeysRef.current.has(viewKey)) return false;
       const now = Date.now();
       const last = connectCooldownByClientRef.current.get(clientId) ?? 0;
       if (now - last < CONNECT_COOLDOWN_MS) return false;
@@ -687,8 +699,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         );
         return false;
       }
+      connectGenAtStartRef.current.set(viewKey, connectGenRef.current.get(viewKey) ?? 0);
+      connectInFlightKeysRef.current.add(viewKey);
+      lastConnectViewKeyByClientRef.current.set(clientId, viewKey);
       const pending = pendingViewKeyByClientRef.current.get(clientId) ?? [];
-      pending.push(viewKey);
+      if (!pending.includes(viewKey)) pending.push(viewKey);
       pendingViewKeyByClientRef.current.set(clientId, pending);
       send({ type: "connect-to-client", token, clientId });
       return true;
@@ -701,21 +716,22 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     const run = () => {
       connectQueueScheduledRef.current = false;
       while (
-        connectInFlightRef.current < MAX_PARALLEL_STREAM_CONNECTS &&
+        connectInFlightKeysRef.current.size < MAX_PARALLEL_STREAM_CONNECTS &&
         connectQueueRef.current.length > 0
       ) {
         const viewKey = connectQueueRef.current.shift();
         if (viewKey == null) break;
         if ((interestRef.current.get(viewKey) ?? 0) <= 0) continue;
-        connectInFlightRef.current += 1;
         const started = connectSignalingRequestImmediate(viewKey);
         if (!started) {
-          connectInFlightRef.current = Math.max(0, connectInFlightRef.current - 1);
           if ((interestRef.current.get(viewKey) ?? 0) > 0) {
             connectQueueRef.current.unshift(viewKey);
           }
         }
-        if (connectQueueRef.current.length > 0 || connectInFlightRef.current > 0) {
+        if (
+          connectQueueRef.current.length > 0 ||
+          connectInFlightKeysRef.current.size >= MAX_PARALLEL_STREAM_CONNECTS
+        ) {
           connectQueueScheduledRef.current = true;
           setTimeout(run, STREAM_CONNECT_STAGGER_MS);
           return;
@@ -728,7 +744,23 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     };
     connectQueueScheduledRef.current = true;
     queueMicrotask(run);
-  }, [connectSignalingRequestImmediate, popPendingViewKey]);
+  }, [connectSignalingRequestImmediate]);
+
+  const finishConnectInFlight = useCallback(
+    (clientId: number, viewKey?: string) => {
+      const vk =
+        viewKey ??
+        (Number.isFinite(clientId) && clientId > 0
+          ? lastConnectViewKeyByClientRef.current.get(clientId)
+          : undefined);
+      if (vk) connectInFlightKeysRef.current.delete(vk);
+      if (Number.isFinite(clientId) && clientId > 0) {
+        lastConnectViewKeyByClientRef.current.delete(clientId);
+      }
+      pumpConnectQueue();
+    },
+    [pumpConnectQueue],
+  );
 
   const connectSignalingRequest = useCallback(
     (viewKey: string) => {
@@ -811,6 +843,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       if (n <= 0) {
         interestRef.current.delete(viewKey);
         prefsRef.current.delete(viewKey);
+        connectGenRef.current.set(viewKey, (connectGenRef.current.get(viewKey) ?? 0) + 1);
+        connectGenAtStartRef.current.delete(viewKey);
+        connectInFlightKeysRef.current.delete(viewKey);
+        lastConnectViewKeyByClientRef.current.delete(clientId);
+        pumpConnectQueue();
         removeFromConnectQueue(viewKey);
         removePendingViewKey(clientId, viewKey);
         const sid = clientSocketByViewKeyRef.current.get(viewKey);
@@ -835,6 +872,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     },
     [
       hasActiveInterestForClientId,
+      pumpConnectQueue,
       removeFromConnectQueue,
       removePendingViewKey,
       stopViewingServer,
@@ -1213,8 +1251,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         }
         case "connect-response": {
           const clientId = Number(msg.clientId);
-          connectInFlightRef.current = Math.max(0, connectInFlightRef.current - 1);
-          pumpConnectQueue();
+          const viewKeyForFlight =
+            Number.isFinite(clientId) && clientId > 0
+              ? lastConnectViewKeyByClientRef.current.get(clientId)
+              : undefined;
+
           if (msg.success !== true) {
             const text =
               typeof msg.message === "string" && msg.message.trim()
@@ -1229,21 +1270,35 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
               const retryable =
                 !limitHit &&
                 /connection not found|client unavailable|not available/i.test(text);
-              const viewKey = popPendingViewKey(clientId) ?? String(clientId);
+              const viewKey =
+                viewKeyForFlight ?? popPendingViewKey(clientId) ?? String(clientId);
+              finishConnectInFlight(clientId, viewKey);
               if (retryable) scheduleConnectRetry(viewKey, text);
               else failClientStream(viewKey, text);
             } else {
+              finishConnectInFlight(clientId);
               showToastRef.current(text, "error");
             }
             break;
           }
+
           if (Number.isFinite(clientId) && clientId > 0) {
-            const pending = pendingViewKeyByClientRef.current.get(clientId);
-            if (pending?.length) {
-              const viewKey = pending[0];
-              clearConnectRetry(viewKey);
-              armStreamConnectTimeout(viewKey);
+            const viewKey = viewKeyForFlight ?? popPendingViewKey(clientId) ?? String(clientId);
+            finishConnectInFlight(clientId, viewKey);
+
+            const clientSocketId = String(msg.clientSocketId || "");
+            if (clientSocketId) {
+              clientSocketByViewKeyRef.current.set(viewKey, clientSocketId);
             }
+            const msgSid = Number(msg.sessionId);
+            if (Number.isFinite(msgSid) && msgSid > 0) {
+              activeSessionIdByViewKeyRef.current.set(viewKey, msgSid);
+            }
+            clearConnectRetry(viewKey);
+            removePendingViewKey(clientId, viewKey);
+            armStreamConnectTimeout(viewKey);
+          } else {
+            finishConnectInFlight(clientId);
           }
           break;
         }
@@ -1252,15 +1307,72 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           const clientId = Number(msg.clientId);
           if (!clientSocketId) break;
 
-          let viewKey = Number.isFinite(clientId) && clientId > 0 ? String(clientId) : "";
+          let viewKey = "";
+          let ignoredStaleStartOffer = false;
           if (Number.isFinite(clientId) && clientId > 0) {
-            const pending = pendingViewKeyByClientRef.current.get(clientId);
-            if (pending?.length) {
-              viewKey = pending.shift()!;
-              if (!pending.length) pendingViewKeyByClientRef.current.delete(clientId);
-              else pendingViewKeyByClientRef.current.set(clientId, pending);
+            for (const [vk, sid] of clientSocketByViewKeyRef.current.entries()) {
+              if (sid === clientSocketId && clientIdFromViewKey(vk) === clientId) {
+                viewKey = vk;
+                break;
+              }
             }
-            
+          }
+
+          if (viewKey) {
+            const genAtStart = connectGenAtStartRef.current.get(viewKey);
+            const genNow = connectGenRef.current.get(viewKey) ?? 0;
+            if (genAtStart !== undefined && genAtStart !== genNow) {
+              console.debug(
+                "[audit] Ignoring stale start-offer",
+                viewKey,
+                "gen",
+                genAtStart,
+                "→",
+                genNow,
+              );
+              ignoredStaleStartOffer = true;
+            }
+          }
+
+          if (!ignoredStaleStartOffer && !viewKey && Number.isFinite(clientId) && clientId > 0) {
+            for (const [vk, n] of interestRef.current.entries()) {
+              if (
+                n > 0 &&
+                clientIdFromViewKey(vk) === clientId &&
+                !pcByViewKeyRef.current.has(vk)
+              ) {
+                const genAtStart = connectGenAtStartRef.current.get(vk);
+                const genNow = connectGenRef.current.get(vk) ?? 0;
+                if (genAtStart !== undefined && genAtStart !== genNow) {
+                  console.debug(
+                    "[audit] Ignoring stale start-offer",
+                    vk,
+                    "gen",
+                    genAtStart,
+                    "→",
+                    genNow,
+                  );
+                  ignoredStaleStartOffer = true;
+                  break;
+                }
+                viewKey = vk;
+                clientSocketByViewKeyRef.current.set(vk, clientSocketId);
+                break;
+              }
+            }
+          }
+
+          if (ignoredStaleStartOffer) break;
+
+          if (!viewKey) {
+            console.warn(
+              "[audit] start-offer: no viewKey bound in clientSocketByViewKeyRef",
+              { clientId, clientSocketId },
+            );
+            break;
+          }
+
+          {
             const msgSid = Number(msg.sessionId);
             if (Number.isFinite(msgSid) && msgSid > 0) {
               const currentSid = activeSessionIdByViewKeyRef.current.get(viewKey) ?? 0;
@@ -1272,10 +1384,14 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
             }
 
             clearConnectRetry(viewKey);
-            connectCooldownByClientRef.current.delete(clientId);
+            if (Number.isFinite(clientId) && clientId > 0) {
+              connectCooldownByClientRef.current.delete(clientId);
+            }
             armStreamConnectTimeout(viewKey);
             clientSocketByViewKeyRef.current.set(viewKey, clientSocketId);
           }
+
+          if ((interestRef.current.get(viewKey) ?? 0) <= 0) break;
 
           const transportPlan = parseStreamTransport(msg);
           applyStreamTransportToRefs(
@@ -1449,7 +1565,13 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         teardownMeshPeerForViewKey(viewKey);
       }
       clientSocketByViewKeyRef.current.clear();
+      activeSessionIdByViewKeyRef.current.clear();
+      connectQueueRef.current = [];
       pendingViewKeyByClientRef.current.clear();
+      connectInFlightKeysRef.current.clear();
+      connectGenRef.current.clear();
+      connectGenAtStartRef.current.clear();
+      lastConnectViewKeyByClientRef.current.clear();
       interestRef.current.clear();
       prefsRef.current.clear();
       sessionTokenRef.current = null;
@@ -1463,6 +1585,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     };
   }, [
     flushPendingConnects,
+    finishConnectInFlight,
     mergeOrgClients,
     pumpConnectQueue,
     send,
@@ -1470,6 +1593,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     teardownAllViewsForClientId,
     teardownMeshPeerForViewKey,
     popPendingViewKey,
+    scheduleConnectRetry,
+    failClientStream,
+    armStreamConnectTimeout,
+    clearConnectRetry,
+    startMeshView,
+    startSfuView,
   ]);
 
   const value = useMemo<AuditSignalingContextValue>(
