@@ -512,10 +512,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       };
       pc.onicecandidate = (iceEvent) => {
         if (!iceEvent.candidate) return;
+        const sid = activeSessionIdByViewKeyRef.current.get(viewKey);
         send({
           type: "ice-candidate",
           targetSocketId: clientSocketId,
           streamKey: viewKey,
+          ...(sid ? { sessionId: sid } : {}),
           candidate: iceEvent.candidate.toJSON(),
         });
       };
@@ -523,10 +525,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         const pref = viewKey ? prefsRef.current.get(viewKey) : undefined;
+        const sid = activeSessionIdByViewKeyRef.current.get(viewKey);
         send({
           type: "offer",
           targetSocketId: clientSocketId,
           streamKey: viewKey,
+          ...(sid ? { sessionId: sid } : {}),
           sdp: offer,
           ...(pref?.preferredSourceId ? { preferredSourceId: pref.preferredSourceId } : {}),
           ...(pref?.preferredSourceIndex != null
@@ -1247,6 +1251,17 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
               if (!pending.length) pendingViewKeyByClientRef.current.delete(clientId);
               else pendingViewKeyByClientRef.current.set(clientId, pending);
             }
+            
+            const msgSid = Number(msg.sessionId);
+            if (Number.isFinite(msgSid) && msgSid > 0) {
+              const currentSid = activeSessionIdByViewKeyRef.current.get(viewKey) ?? 0;
+              if (msgSid < currentSid) {
+                console.warn("[audit] Dropping stale start-offer for", viewKey, "sessionId", msgSid);
+                break;
+              }
+              activeSessionIdByViewKeyRef.current.set(viewKey, msgSid);
+            }
+
             clearConnectRetry(viewKey);
             connectCooldownByClientRef.current.delete(clientId);
             armStreamConnectTimeout(viewKey);
@@ -1294,6 +1309,18 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         case "answer": {
           const sdp = msg.sdp as RTCSessionDescriptionInit | undefined;
           const vk = streamSignalingKey(msg) ?? "";
+          
+          if (vk) {
+            const msgSid = Number(msg.sessionId);
+            if (Number.isFinite(msgSid) && msgSid > 0) {
+              const currentSid = activeSessionIdByViewKeyRef.current.get(vk) ?? 0;
+              if (msgSid !== currentSid) {
+                console.warn(`[audit] Dropping stale answer for ${vk}, sessionId: ${msgSid} != ${currentSid}`);
+                break;
+              }
+            }
+          }
+
           const pc = vk ? pcByViewKeyRef.current.get(vk) : null;
           if (pc && sdp) {
             try {
@@ -1320,6 +1347,18 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         case "ice-candidate": {
           const candidate = msg.candidate as RTCIceCandidateInit | undefined;
           const vk = streamSignalingKey(msg) ?? "";
+          
+          if (vk) {
+            const msgSid = Number(msg.sessionId);
+            if (Number.isFinite(msgSid) && msgSid > 0) {
+              const currentSid = activeSessionIdByViewKeyRef.current.get(vk) ?? 0;
+              if (msgSid !== currentSid) {
+                console.warn(`[audit] Dropping stale ice-candidate for ${vk}, sessionId: ${msgSid} != ${currentSid}`);
+                break;
+              }
+            }
+          }
+
           const pc = vk ? pcByViewKeyRef.current.get(vk) : null;
           if (!pc || !candidate?.candidate || !vk) break;
           if (!pc.remoteDescription || !pc.localDescription) {
