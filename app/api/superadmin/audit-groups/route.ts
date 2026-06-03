@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
   if (!verifyAuditSuperadminSecret(req)) return err("Unauthorized", 401);
 
   try {
-    const [groupsRes, clientsRes, membersRes, usersRes] = await Promise.all([
+    const [groupsRes, clientsRes, membersRes, orgAdminsRes, usersRes] = await Promise.all([
       supabase
         .from("admin_audit_groups")
         .select("*")
@@ -50,6 +50,10 @@ export async function GET(req: NextRequest) {
         .select("*")
         .order("assigned_at"),
       supabase
+        .from("admin_audit_group_org_admins")
+        .select("*")
+        .order("assigned_at"),
+      supabase
         .from("users")
         .select("id, name, email")
         .eq("role", "team_lead"),
@@ -58,11 +62,23 @@ export async function GET(req: NextRequest) {
     if (groupsRes.error) throw groupsRes.error;
     if (clientsRes.error) throw clientsRes.error;
     if (membersRes.error) throw membersRes.error;
+    if (orgAdminsRes.error) {
+      if (orgAdminsRes.error.code === "42P01") {
+        return err("Run Supabase migration 20260604_admin_audit_group_org_admins.sql", 503);
+      }
+      throw orgAdminsRes.error;
+    }
     if (usersRes.error) throw usersRes.error;
 
     const groups = (groupsRes.data ?? []) as Group[];
     const groupClients = (clientsRes.data ?? []) as GroupClient[];
     const groupMembers = (membersRes.data ?? []) as GroupMember[];
+    const groupOrgAdmins = (orgAdminsRes.data ?? []) as Array<{
+      group_id: string;
+      signaling_admin_id: number;
+      assigned_at: string;
+      assigned_by_username: string;
+    }>;
     const teamLeads = (usersRes.data ?? []) as { id: string; name: string; email: string }[];
 
     const teamLeadById = new Map(teamLeads.map((u) => [u.id, u]));
@@ -88,6 +104,13 @@ export async function GET(req: NextRequest) {
             assigned_by_username: m.assigned_by_username,
           };
         }),
+      orgAdmins: groupOrgAdmins
+        .filter((m) => m.group_id === g.id)
+        .map((m) => ({
+          signaling_admin_id: Number(m.signaling_admin_id),
+          assigned_at: m.assigned_at,
+          assigned_by_username: m.assigned_by_username,
+        })),
     }));
 
     return ok({ groups: enriched, teamLeads });
@@ -109,7 +132,7 @@ export async function POST(req: NextRequest) {
     return err("Invalid JSON", 400);
   }
 
-  const action = String(body.action ?? "");
+  const action = String(body.action ?? "").trim();
 
   // ─── create-group ─────────────────────────────────────────────────────────
   if (action === "create-group") {
@@ -294,6 +317,59 @@ export async function POST(req: NextRequest) {
       return err("Internal server error", 500);
     }
     return ok({ assigned: true });
+  }
+
+  // ─── assign-org-admin (admin app org_admin / it_ops) ───────────────────────
+  if (action === "assign-org-admin") {
+    const groupId = typeof body.groupId === "string" ? body.groupId.trim() : "";
+    const signalingAdminId = Number(body.signalingAdminId);
+    const assignedByUsername =
+      typeof body.assignedByUsername === "string" ? body.assignedByUsername.trim() : "";
+
+    if (!groupId) return err("groupId is required", 400);
+    if (!Number.isFinite(signalingAdminId) || signalingAdminId <= 0) {
+      return err("signalingAdminId must be a positive integer", 400);
+    }
+    if (!assignedByUsername) return err("assignedByUsername is required", 400);
+
+    const { error } = await supabase.from("admin_audit_group_org_admins").upsert(
+      {
+        group_id: groupId,
+        signaling_admin_id: signalingAdminId,
+        assigned_by_username: assignedByUsername,
+      },
+      { onConflict: "group_id,signaling_admin_id" },
+    );
+    if (error) {
+      if (error.code === "42P01") {
+        return err("Run Supabase migration 20260604_admin_audit_group_org_admins.sql", 503);
+      }
+      console.error("[superadmin/audit-groups/assign-org-admin]", error);
+      return err(error.message || "Internal server error", 500);
+    }
+    return ok({ assigned: true });
+  }
+
+  // ─── remove-org-admin ─────────────────────────────────────────────────────
+  if (action === "remove-org-admin") {
+    const groupId = typeof body.groupId === "string" ? body.groupId.trim() : "";
+    const signalingAdminId = Number(body.signalingAdminId);
+    if (!groupId) return err("groupId is required", 400);
+    if (!Number.isFinite(signalingAdminId) || signalingAdminId <= 0) {
+      return err("signalingAdminId must be a positive integer", 400);
+    }
+
+    const { error } = await supabase
+      .from("admin_audit_group_org_admins")
+      .delete()
+      .eq("group_id", groupId)
+      .eq("signaling_admin_id", signalingAdminId);
+
+    if (error) {
+      console.error("[superadmin/audit-groups/remove-org-admin]", error);
+      return err("Internal server error", 500);
+    }
+    return ok({ removed: true });
   }
 
   // ─── remove-team-lead ─────────────────────────────────────────────────────
