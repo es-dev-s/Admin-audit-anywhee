@@ -332,9 +332,9 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     activeSessionIdByViewKeyRef.current.delete(viewKey);
   }, []);
 
-  const hasActiveInterestForClientSocket = useCallback((clientSocketId: string) => {
-    for (const [viewKey, sid] of clientSocketByViewKeyRef.current.entries()) {
-      if (sid === clientSocketId && (interestRef.current.get(viewKey) ?? 0) > 0) {
+  const hasActiveInterestForClientId = useCallback((clientId: number) => {
+    for (const [viewKey, n] of interestRef.current.entries()) {
+      if (clientIdFromViewKey(viewKey) === clientId && n > 0) {
         return true;
       }
     }
@@ -816,8 +816,12 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         const sid = clientSocketByViewKeyRef.current.get(viewKey);
         clientSocketByViewKeyRef.current.delete(viewKey);
         teardownPeerForViewKey(viewKey);
-        if (sid && !hasActiveInterestForClientSocket(sid)) {
-          stopViewingServer(sid);
+        if (sid) {
+          queueMicrotask(() => {
+            if (!hasActiveInterestForClientId(clientId)) {
+              stopViewingServer(sid);
+            }
+          });
         }
         setStreams((prev) => {
           if (!prev.has(viewKey)) return prev;
@@ -830,7 +834,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
       }
     },
     [
-      hasActiveInterestForClientSocket,
+      hasActiveInterestForClientId,
       removeFromConnectQueue,
       removePendingViewKey,
       stopViewingServer,
@@ -1235,9 +1239,11 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
           }
           if (Number.isFinite(clientId) && clientId > 0) {
             const pending = pendingViewKeyByClientRef.current.get(clientId);
-            const viewKey = pending?.[0] ?? String(clientId);
-            clearConnectRetry(viewKey);
-            armStreamConnectTimeout(viewKey);
+            if (pending?.length) {
+              const viewKey = pending[0];
+              clearConnectRetry(viewKey);
+              armStreamConnectTimeout(viewKey);
+            }
           }
           break;
         }
