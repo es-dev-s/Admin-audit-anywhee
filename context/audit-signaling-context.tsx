@@ -329,6 +329,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     }
     iceDedupByViewKeyRef.current.delete(viewKey);
     pendingIceByViewKeyRef.current.delete(viewKey);
+    activeSessionIdByViewKeyRef.current.delete(viewKey);
   }, []);
 
   const hasActiveInterestForClientSocket = useCallback((clientSocketId: string) => {
@@ -811,6 +812,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
         interestRef.current.delete(viewKey);
         prefsRef.current.delete(viewKey);
         removeFromConnectQueue(viewKey);
+        removePendingViewKey(clientId, viewKey);
         const sid = clientSocketByViewKeyRef.current.get(viewKey);
         clientSocketByViewKeyRef.current.delete(viewKey);
         teardownPeerForViewKey(viewKey);
@@ -830,6 +832,7 @@ export function AuditSignalingProvider({ children }: { children: ReactNode }) {
     [
       hasActiveInterestForClientSocket,
       removeFromConnectQueue,
+      removePendingViewKey,
       stopViewingServer,
       teardownPeerForViewKey,
     ],
